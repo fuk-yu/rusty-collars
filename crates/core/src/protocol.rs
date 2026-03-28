@@ -311,6 +311,7 @@ pub struct PresetPreviewEvent {
     pub actual_time_ms: u64,
     pub track_index: usize,
     pub step_index: usize,
+    pub transmit_duration_ms: u64,
     pub collar_name: String,
     pub collar_id: u16,
     pub channel: u8,

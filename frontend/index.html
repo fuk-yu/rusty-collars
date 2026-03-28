@@ -91,11 +91,21 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 .preset-preview .status { font-size: 0.85em; color: var(--text2); margin-top: 8px; }
 .preset-preview .status.error { color: var(--warn); }
 .preset-preview .summary { font-size: 0.8em; color: var(--text2); margin-top: 8px; }
+.preset-preview-timeline { margin-top: 10px; }
+.preset-preview-timeline-scale { display: flex; justify-content: space-between; gap: 8px; margin-bottom: 4px; font-size: 0.72em; color: var(--text2); }
+.preset-preview-timeline-bar { position: relative; height: 28px; border-radius: 6px; overflow: hidden; background: linear-gradient(180deg, rgba(255,255,255,0.05), rgba(255,255,255,0.02)); border: 1px solid rgba(255,255,255,0.1); }
+.preset-preview-segment { position: absolute; top: 3px; bottom: 3px; border-radius: 4px; border: 1px solid rgba(255,255,255,0.28); cursor: pointer; opacity: 0.9; transition: transform 0.12s, opacity 0.12s, box-shadow 0.12s; }
+.preset-preview-segment:hover,
+.preset-preview-segment:focus-visible,
+.preset-preview-segment.active { opacity: 1; box-shadow: 0 0 0 2px rgba(255,255,255,0.18); transform: translateY(-1px); z-index: 2; outline: none; }
 .preset-preview-table-wrap { margin-top: 10px; overflow-x: auto; }
-.preset-preview-table { width: 100%; border-collapse: collapse; font-size: 0.78em; }
-.preset-preview-table th, .preset-preview-table td { text-align: left; padding: 6px 8px; border-bottom: 1px solid rgba(255,255,255,0.08); vertical-align: top; }
+.preset-preview-table { width: 100%; border-collapse: collapse; font-size: 0.72em; }
+.preset-preview-table th, .preset-preview-table td { text-align: left; padding: 4px 6px; border-bottom: 1px solid rgba(255,255,255,0.08); vertical-align: top; }
 .preset-preview-table th { color: var(--text2); font-weight: 600; white-space: nowrap; }
 .preset-preview-table td { white-space: nowrap; }
+.preset-preview-table .frame-hex { white-space: normal; word-break: break-all; }
+.preset-preview-row { transition: background-color 0.12s; }
+.preset-preview-row.active { background: rgba(255,255,255,0.08); }
 .settings-disabled { opacity: 0.45; }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .debug-toolbar { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; align-items: center; }
@@ -312,6 +322,7 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
       <summary>Preview</summary>
       <div class="status" id="editor-preview-status">Preview unavailable until the editor is initialized.</div>
       <div class="summary" id="editor-preview-summary"></div>
+      <div class="preset-preview-timeline" id="editor-preview-timeline"></div>
       <div class="preset-preview-table-wrap" id="editor-preview-events"></div>
     </details>
     <button onclick="editorAddTrack()" style="margin-top:8px">+ Add Track</button>
@@ -347,6 +358,7 @@ const PRESET_DURATION_MIN_MS = 500;
 const PRESET_DURATION_MAX_MS = 10000;
 const PRESET_DURATION_STEP_MS = 500;
 const PRESET_PREVIEW_DEBOUNCE_MS = 150;
+const PRESET_PREVIEW_TRACK_COLORS = ['#4ecca3', '#ffc947', '#e94560', '#6fa8ff', '#ff8fab', '#b8de6f'];
 let statusConnected = false;
 let statusText = 'Connecting...';
 let wsPingMs = null;
@@ -953,19 +965,83 @@ function formatPreviewTimeMs(timeMs) {
   return timeMs + 'ms';
 }
 
-function groupHexPairs(rawHex) {
-  const pairs = rawHex.match(/.{1,2}/g);
-  return pairs ? pairs.join(' ') : rawHex;
+function previewTrackColor(trackIndex) {
+  return PRESET_PREVIEW_TRACK_COLORS[trackIndex % PRESET_PREVIEW_TRACK_COLORS.length];
+}
+
+function setActivePreviewEvent(previewId) {
+  document.querySelectorAll('[data-preview-id]').forEach(el => {
+    el.classList.toggle('active', el.dataset.previewId === previewId);
+  });
+}
+
+function clearActivePreviewEvent() {
+  document.querySelectorAll('[data-preview-id].active').forEach(el => el.classList.remove('active'));
+}
+
+function bindPreviewEventHighlights(container) {
+  container.querySelectorAll('[data-preview-id]').forEach(el => {
+    const previewId = el.dataset.previewId;
+    el.addEventListener('mouseenter', () => setActivePreviewEvent(previewId));
+    el.addEventListener('mouseleave', clearActivePreviewEvent);
+    el.addEventListener('focus', () => setActivePreviewEvent(previewId));
+    el.addEventListener('blur', clearActivePreviewEvent);
+  });
+}
+
+function buildPreviewSegmentTitle(event) {
+  const delayMs = event.actual_time_ms - event.requested_time_ms;
+  return `Track ${event.track_index + 1}, step ${event.step_index + 1}, ${event.collar_name}, ${describeMode(event.mode)}, level ${event.intensity}, requested ${formatPreviewTimeMs(event.requested_time_ms)}, actual ${formatPreviewTimeMs(event.actual_time_ms)}, delay ${delayMs}ms, TX ${event.transmit_duration_ms}ms`;
+}
+
+function renderPreviewTimeline(preview) {
+  const timelineEl = document.getElementById('editor-preview-timeline');
+  if (!timelineEl) return;
+  if (!preview.events.length) {
+    timelineEl.innerHTML = '';
+    return;
+  }
+
+  const timelineEndMs = Math.max(
+    preview.total_duration_ms,
+    ...preview.events.map(event => event.actual_time_ms + event.transmit_duration_ms),
+  );
+
+  timelineEl.innerHTML = `
+    <div class="preset-preview-timeline-scale">
+      <span class="mono">0ms</span>
+      <span class="mono">${formatPreviewTimeMs(timelineEndMs)}</span>
+    </div>
+    <div class="preset-preview-timeline-bar">
+      ${preview.events.map((event, index) => {
+        const previewId = `preview-${index}`;
+        const leftPct = timelineEndMs === 0 ? 0 : (event.actual_time_ms / timelineEndMs) * 100;
+        const widthPct = timelineEndMs === 0 ? 100 : Math.max((event.transmit_duration_ms / timelineEndMs) * 100, 0.35);
+        return `
+          <button
+            type="button"
+            class="preset-preview-segment"
+            data-preview-id="${previewId}"
+            title="${esc(buildPreviewSegmentTitle(event))}"
+            style="left:${leftPct}%;width:${widthPct}%;background:${previewTrackColor(event.track_index)}"
+          ></button>
+        `;
+      }).join('')}
+    </div>
+  `;
+  bindPreviewEventHighlights(timelineEl);
 }
 
 function renderEditorPreview() {
   const statusEl = document.getElementById('editor-preview-status');
   const summaryEl = document.getElementById('editor-preview-summary');
+  const timelineEl = document.getElementById('editor-preview-timeline');
   const eventsEl = document.getElementById('editor-preview-events');
-  if (!statusEl || !summaryEl || !eventsEl) return;
+  if (!statusEl || !summaryEl || !timelineEl || !eventsEl) return;
 
   statusEl.classList.remove('error');
   summaryEl.textContent = '';
+  timelineEl.innerHTML = '';
   eventsEl.innerHTML = '';
 
   if (!editorData) {
@@ -987,38 +1063,42 @@ function renderEditorPreview() {
     summaryEl.textContent =
       `${preview.events.length} RF messages over ${formatPreviewTimeMs(preview.total_duration_ms)}. ` +
       `${delayedEvents} delayed by single-transmitter serialization.`;
+    renderPreviewTimeline(preview);
     eventsEl.innerHTML = `
       <table class="preset-preview-table">
         <thead>
           <tr>
             <th>At</th>
-            <th>Requested</th>
+            <th title="Requested">🎯</th>
             <th>Delay</th>
-            <th>Track</th>
-            <th>Step</th>
+            <th title="Track">🧵</th>
+            <th title="Step">👣</th>
+            <th title="RF TX Duration">⏱️</th>
             <th>Collar</th>
             <th>Mode</th>
-            <th>Level</th>
+            <th title="Level">📶</th>
             <th>Frame</th>
           </tr>
         </thead>
         <tbody>
-          ${preview.events.map(event => `
-            <tr>
+          ${preview.events.map((event, index) => `
+            <tr class="preset-preview-row" data-preview-id="preview-${index}" title="${esc(buildPreviewSegmentTitle(event))}">
               <td class="mono">${formatPreviewTimeMs(event.actual_time_ms)}</td>
               <td class="mono">${formatPreviewTimeMs(event.requested_time_ms)}</td>
               <td class="mono">${event.actual_time_ms - event.requested_time_ms}ms</td>
-              <td>${event.track_index + 1}</td>
+              <td style="color:${previewTrackColor(event.track_index)}">${event.track_index + 1}</td>
               <td>${event.step_index + 1}</td>
+              <td class="mono">${event.transmit_duration_ms}ms</td>
               <td>${esc(event.collar_name)} <span style="color:var(--text2)">CH${event.channel + 1}</span></td>
               <td>${esc(describeMode(event.mode))}</td>
               <td>${event.intensity}</td>
-              <td class="mono">${groupHexPairs(event.raw_hex)}</td>
+              <td class="mono frame-hex">${event.raw_hex}</td>
             </tr>
           `).join('')}
         </tbody>
       </table>
     `;
+    bindPreviewEventHighlights(eventsEl);
   }
 }
 
@@ -1071,6 +1151,7 @@ function openPresetEditor(name) {
     editorOriginalName = null;
     document.getElementById('editor-title').textContent = 'New Preset';
   }
+  editorOpenTrack = editorData.tracks.length > 0 ? 0 : -1;
   resetEditorPreview();
   normalizeEditorPresetDurations(editorData);
   document.getElementById('editor-name').value = editorData.name;
@@ -1082,10 +1163,29 @@ function closeEditor() {
   document.getElementById('editor-overlay').classList.remove('active');
   editorData = null;
   editorOriginalName = null;
+  editorOpenTrack = -1;
   resetEditorPreview();
 }
 
-let editorOpenTrack = 0; // which track is unfolded
+let editorOpenTrack = -1; // -1 means all tracks are folded
+
+function toggleEditorTrack(trackIndex) {
+  editorOpenTrack = editorOpenTrack === trackIndex ? -1 : trackIndex;
+  renderEditorTracks();
+}
+
+function removeEditorTrack(trackIndex) {
+  editorData.tracks.splice(trackIndex, 1);
+  if (editorOpenTrack === trackIndex) {
+    editorOpenTrack = -1;
+  } else if (editorOpenTrack > trackIndex) {
+    editorOpenTrack--;
+  }
+  if (editorOpenTrack >= editorData.tracks.length) {
+    editorOpenTrack = editorData.tracks.length - 1;
+  }
+  renderEditorTracks();
+}
 
 function renderEditorTracks() {
   const container = document.getElementById('editor-tracks');
@@ -1098,13 +1198,13 @@ function renderEditorTracks() {
       `<option value="${esc(c.name)}" ${c.name === track.collar_name ? 'selected' : ''}>${esc(c.name)}</option>`
     ).join('');
     div.innerHTML = `
-      <div class="track-header" onclick="editorOpenTrack=${ti};renderEditorTracks()">
+      <div class="track-header" onclick="toggleEditorTrack(${ti})">
         <span>
           <span class="fold-arrow ${isOpen ? 'open' : ''}">&#9654;</span>
           Track: <select onclick="event.stopPropagation()" onchange="editorData.tracks[${ti}].collar_name=this.value;schedulePresetPreviewRefresh()">${collarOpts}</select>
           <span style="color:var(--text2);font-size:0.85em">(${track.steps.length} steps)</span>
         </span>
-        <button class="btn-del" onclick="event.stopPropagation();editorData.tracks.splice(${ti},1);if(editorOpenTrack>=editorData.tracks.length)editorOpenTrack=Math.max(0,editorData.tracks.length-1);renderEditorTracks()">X</button>
+        <button class="btn-del" onclick="event.stopPropagation();removeEditorTrack(${ti})">X</button>
       </div>
       <div class="track-body ${isOpen ? 'open' : ''}" id="track-body-${ti}"></div>
     `;

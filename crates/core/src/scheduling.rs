@@ -134,6 +134,7 @@ pub fn preview_preset(preset: &Preset, collars: &[Collar]) -> Result<PresetPrevi
                     actual_time_ms: scheduled.event.time_ms,
                     track_index: scheduled.track_index,
                     step_index: scheduled.step_index,
+                    transmit_duration_ms: RF_COMMAND_TRANSMIT_DURATION_MS,
                     collar_name: scheduled.collar_name,
                     collar_id: scheduled.event.collar_id,
                     channel: scheduled.event.channel,
@@ -412,6 +413,7 @@ mod tests {
         assert_eq!(preview.events.len(), 4);
         assert_eq!(preview.events[0].requested_time_ms, 0);
         assert_eq!(preview.events[0].actual_time_ms, 0);
+        assert_eq!(preview.events[0].transmit_duration_ms, 130);
         assert_eq!(preview.events[1].requested_time_ms, 0);
         assert_eq!(preview.events[1].actual_time_ms, 130);
         assert_eq!(preview.events[1].mode, CommandMode::Shock);
