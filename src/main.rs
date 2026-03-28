@@ -14,6 +14,7 @@ mod led;
 #[allow(unexpected_cfgs)]
 mod net;
 mod ota;
+mod remote_control;
 mod rf;
 mod server;
 mod storage;
@@ -99,12 +100,7 @@ fn main() -> Result<()> {
     )?;
     log_heap("after network");
 
-    let _time_sync = if network.supports_time_sync() {
-        time_sync::maybe_start(&device_settings)?
-    } else {
-        info!("Skipping NTP time sync because this target has no network stack");
-        None
-    };
+    let network_supports_background_services = network.supports_time_sync();
 
     let tx_led = Arc::new(Mutex::new(led::Led::new(tx_led_pin)?));
     let rx_led = Arc::new(Mutex::new(led::Led::new(rx_led_pin)?));
@@ -138,6 +134,26 @@ fn main() -> Result<()> {
         presets,
     );
     log_heap("after app context");
+
+    let _time_sync = if network_supports_background_services {
+        let time_sync_settings = ctx.domain.lock().unwrap().device_settings.clone();
+        let time_sync_ctx = ctx.clone();
+        time_sync::maybe_start(&time_sync_settings, move |server| {
+            time_sync_ctx.record_event(
+                protocol::EventSource::System,
+                protocol::EventLogEntryKind::NtpSync { server },
+            );
+        })?
+    } else {
+        info!("Skipping NTP time sync because this target has no network stack");
+        None
+    };
+
+    if network_supports_background_services {
+        remote_control::start(ctx.clone())?;
+    } else {
+        info!("Skipping remote control because this target has no network stack");
+    }
 
     // Start picoserve HTTP+WS server on a dedicated thread
     let server_ctx = ctx.clone();

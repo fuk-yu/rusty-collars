@@ -30,6 +30,16 @@ pub struct DeviceSettings {
     pub ntp_enabled: bool,
     #[serde(default = "default_ntp_server")]
     pub ntp_server: String,
+    // Reverse remote control
+    #[serde(default)]
+    pub remote_control_enabled: bool,
+    #[serde(default)]
+    pub remote_control_url: String,
+    #[serde(default = "default_true")]
+    pub remote_control_validate_cert: bool,
+    // Diagnostics
+    #[serde(default)]
+    pub record_event_log: bool,
 }
 
 fn default_true() -> bool {
@@ -81,6 +91,10 @@ impl Default for DeviceSettings {
             max_clients: 8,
             ntp_enabled: true,
             ntp_server: default_ntp_server(),
+            remote_control_enabled: false,
+            remote_control_url: String::new(),
+            remote_control_validate_cert: true,
+            record_event_log: false,
         }
     }
 }
@@ -88,7 +102,7 @@ impl Default for DeviceSettings {
 /// AP SSID is always fixed.
 pub const AP_SSID: &str = "rfcollars";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CommandMode {
     Shock,
@@ -112,6 +126,10 @@ impl CommandMode {
             3 => Some(Self::Beep),
             _ => None,
         }
+    }
+
+    pub fn has_intensity(self) -> bool {
+        !matches!(self, Self::Beep)
     }
 }
 
@@ -201,6 +219,21 @@ pub enum ClientMessage {
         intensity: u8,
         action: ButtonAction,
     },
+    RunAction {
+        collar_name: String,
+        mode: CommandMode,
+        intensity: u8,
+        duration_ms: u32,
+    },
+    StartAction {
+        collar_name: String,
+        mode: CommandMode,
+        intensity: u8,
+    },
+    StopAction {
+        collar_name: String,
+        mode: CommandMode,
+    },
     AddCollar {
         name: String,
         collar_id: u16,
@@ -288,8 +321,81 @@ pub enum ServerMessage<'a> {
         preview: Option<PresetPreview>,
         error: Option<String>,
     },
+    RemoteControlStatus {
+        status: RemoteControlStatus,
+    },
+    EventLogState {
+        enabled: bool,
+        events: &'a [EventLogEntry],
+    },
+    EventLogEvent {
+        event: &'a EventLogEntry,
+    },
     Error {
         message: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteControlStatus {
+    pub enabled: bool,
+    pub connected: bool,
+    pub url: String,
+    pub validate_cert: bool,
+    pub rtt_ms: Option<u32>,
+    pub status_text: String,
+}
+
+impl Default for RemoteControlStatus {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            connected: false,
+            url: String::new(),
+            validate_cert: true,
+            rtt_ms: None,
+            status_text: "Off".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EventSource {
+    LocalUi,
+    RemoteControl,
+    System,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct EventLogEntry {
+    pub sequence: u64,
+    pub monotonic_ms: u64,
+    pub unix_ms: Option<u64>,
+    pub source: EventSource,
+    #[serde(flatten)]
+    pub kind: EventLogEntryKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "event", rename_all = "snake_case")]
+pub enum EventLogEntryKind {
+    Action {
+        collar_name: String,
+        mode: CommandMode,
+        intensity: Option<u8>,
+        duration_ms: u32,
+    },
+    PresetRun {
+        preset_name: String,
+    },
+    NtpSync {
+        server: String,
+    },
+    RemoteControlConnection {
+        connected: bool,
+        url: String,
+        reason: Option<String>,
     },
 }
 
@@ -412,6 +518,22 @@ mod tests {
         assert!(PresetStepMode::Vibrate.has_intensity());
         assert!(!PresetStepMode::Beep.has_intensity());
         assert!(!PresetStepMode::Pause.has_intensity());
+    }
+
+    #[test]
+    fn command_mode_has_intensity() {
+        assert!(CommandMode::Shock.has_intensity());
+        assert!(CommandMode::Vibrate.has_intensity());
+        assert!(!CommandMode::Beep.has_intensity());
+    }
+
+    #[test]
+    fn device_settings_defaults_include_remote_control_and_event_log() {
+        let settings = DeviceSettings::default();
+        assert!(!settings.remote_control_enabled);
+        assert_eq!(settings.remote_control_url, "");
+        assert!(settings.remote_control_validate_cert);
+        assert!(!settings.record_event_log);
     }
 
     #[test]
@@ -562,6 +684,26 @@ mod tests {
                 assert_eq!(intensity, 50);
             }
             other => panic!("Expected Command, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn client_message_run_action_deserialization() {
+        let json = r#"{"type":"run_action","collar_name":"Rex","mode":"shock","intensity":25,"duration_ms":1500}"#;
+        let msg: ClientMessage = serde_json::from_str(json).unwrap();
+        match msg {
+            ClientMessage::RunAction {
+                collar_name,
+                mode,
+                intensity,
+                duration_ms,
+            } => {
+                assert_eq!(collar_name, "Rex");
+                assert_eq!(mode, CommandMode::Shock);
+                assert_eq!(intensity, 25);
+                assert_eq!(duration_ms, 1500);
+            }
+            other => panic!("Expected RunAction, got {:?}", other),
         }
     }
 

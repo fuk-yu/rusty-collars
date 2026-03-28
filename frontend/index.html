@@ -118,6 +118,12 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 .debug-event .raw { color: var(--text2); }
 .debug-event .cksum-ok { color: var(--ok); }
 .debug-event .cksum-bad { color: var(--danger); font-weight: bold; }
+.event-log-list { max-height: 42vh; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
+.event-log-item { display: grid; grid-template-columns: auto auto 1fr; gap: 8px; align-items: start; font-size: 0.8em; line-height: 1.35; padding: 6px 8px; border-radius: 6px; background: rgba(255,255,255,0.04); }
+.event-log-item .ts { color: var(--text2); white-space: nowrap; }
+.event-log-item .src { color: var(--accent); text-transform: uppercase; font-size: 0.82em; letter-spacing: 0.03em; white-space: nowrap; }
+.event-log-item .body { min-width: 0; word-break: break-word; }
+.event-log-empty { font-size: 0.85em; color: var(--text2); }
 
 /* Floating STOP button */
 .stop-fab {
@@ -154,6 +160,7 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
     <div class="version mono" id="app-version"></div>
     <div class="indicators" id="indicators">
       <span><span class="dot off" id="dot"></span> <span id="conn-text">Connecting...</span></span>
+      <span id="remote-conn-text">↗ off</span>
       <span id="uptime-text"></span>
       <span class="clients-wrapper" id="clients-wrapper"><span id="clients-text"></span><div class="clients-tooltip" id="clients-tooltip"></div></span>
       <span id="heap-text"></span>
@@ -186,6 +193,13 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 </div>
 
 <div class="tab-content" id="tab-debug">
+  <div class="card">
+    <div class="debug-toolbar">
+      <h3 style="margin:0">Event Log</h3>
+      <span id="event-log-status" style="font-size:0.85em;color:var(--text2)">Recording off</span>
+    </div>
+    <div id="event-log-events" class="event-log-list"></div>
+  </div>
   <div class="card">
     <div class="debug-toolbar">
       <button class="btn-run" id="rf-debug-toggle" onclick="toggleRfDebug()">Start Listening</button>
@@ -246,6 +260,16 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
       <label>Max clients</label>
       <input type="number" id="settings-max-clients" min="1" max="16" style="width:60px">
     </div>
+    <div class="form-row">
+      <label style="min-width:auto"><input type="checkbox" id="settings-remote-control-enabled" onchange="updateRemoteControlSettingsUi()"> Enable remote control server</label>
+    </div>
+    <div class="form-row" id="settings-remote-control-url-row">
+      <label>WS URL</label>
+      <input type="text" id="settings-remote-control-url" placeholder="wss://example.com/device" oninput="updateRemoteControlSettingsUi()">
+    </div>
+    <div class="form-row" id="settings-remote-control-validate-row">
+      <label style="min-width:auto"><input type="checkbox" id="settings-remote-control-validate-cert"> Validate TLS certificate for wss://</label>
+    </div>
   </div>
   <div class="card">
     <h3>Time Sync</h3>
@@ -255,6 +279,12 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
     <div class="form-row" id="settings-ntp-server-row">
       <label>NTP Server</label>
       <input type="text" id="settings-ntp-server" placeholder="pool.ntp.org">
+    </div>
+  </div>
+  <div class="card">
+    <h3>Diagnostics</h3>
+    <div class="form-row" style="margin-top:8px">
+      <label style="min-width:auto"><input type="checkbox" id="settings-record-event-log"> Record event log</label>
     </div>
   </div>
   <div class="card">
@@ -345,7 +375,9 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 <script>
 const FRONTEND_APP_VERSION = "__RUSTY_COLLARS_APP_VERSION__";
 let ws = null;
-let state = { app_version: null, collars: [], presets: [], preset_running: null, rf_lockout_remaining_ms: 0 };
+let state = { app_version: null, collars: [], presets: [], preset_running: null, rf_lockout_remaining_ms: 0, device_settings: null };
+let remoteStatus = { enabled: false, connected: false, url: '', validate_cert: true, rtt_ms: null, status_text: 'Off' };
+let eventLog = { enabled: false, events: [] };
 let rfDebug = { listening: false, events: [] };
 let rfDebugWanted = false;
 let editorData = null; // working copy during editing
@@ -388,6 +420,21 @@ function renderConnectionStatus() {
   } else {
     connText.textContent = statusText;
   }
+}
+
+function renderRemoteControlStatus() {
+  const el = document.getElementById('remote-conn-text');
+  if (!el) return;
+  el.title = remoteStatus.url || '';
+  if (!remoteStatus.enabled) {
+    el.textContent = '\u2197 off';
+    return;
+  }
+  if (remoteStatus.connected) {
+    el.textContent = remoteStatus.rtt_ms == null ? '\u2197 ...' : `\u2197 ${remoteStatus.rtt_ms}ms`;
+    return;
+  }
+  el.textContent = '\u2197 ' + (remoteStatus.status_text || 'down');
 }
 
 function formatUptime(totalSeconds) {
@@ -548,6 +595,7 @@ function connect() {
     ws = null;
     clearPingTimer();
     resetPingState();
+    stopAllHeldButtons();
     rfDebug.listening = false;
     renderDebug();
     scheduleReconnect();
@@ -562,12 +610,27 @@ function connect() {
     switch (msg.type) {
       case 'state':
         reloadIfAppVersionChanged(msg.app_version);
-        state = msg;
+        state = { ...msg, device_settings: state.device_settings };
         setRfLockoutRemainingMs(msg.rf_lockout_remaining_ms || 0);
         render();
         break;
       case 'pong':
         handlePong(msg);
+        break;
+      case 'remote_control_status':
+        remoteStatus = msg.status;
+        renderRemoteControlStatus();
+        break;
+      case 'event_log_state':
+        eventLog = { enabled: !!msg.enabled, events: msg.events || [] };
+        renderEventLog();
+        break;
+      case 'event_log_event':
+        eventLog.events.push(msg.event);
+        if (eventLog.events.length > 100) {
+          eventLog.events.splice(0, eventLog.events.length - 100);
+        }
+        renderEventLog();
         break;
       case 'rf_debug_state':
         rfDebug = { listening: msg.listening, events: msg.events };
@@ -628,9 +691,11 @@ function render() {
   renderUptime();
   renderClients();
   renderHeap();
+  renderRemoteControlStatus();
   renderStopAllButton();
   renderRemotes();
   renderPresets();
+  renderEventLog();
   renderDebug();
 }
 
@@ -694,15 +759,8 @@ function renderRemotes() {
     const collar = btn.dataset.collar;
     const whilePressed = getCollarPref(collar, 'whilePressed', 'false') === 'true';
     if (whilePressed) {
-      // Hold mode: send repeatedly while button is held
-      setupHoldButton(btn, () => {
-        const mode = btn.dataset.mode;
-        const slider = document.getElementById('slider-' + collar);
-        const intensity = slider ? parseInt(slider.value) : 30;
-        send({ type: 'command', collar_name: collar, mode, intensity });
-      });
+      setupHoldButton(btn);
     } else {
-      // Timed mode: send for the configured duration on click
       setupTimedButton(btn);
     }
   });
@@ -734,18 +792,7 @@ function setupTimedButton(btn) {
     const durSlider = document.getElementById('dur-slider-' + collar);
     const durationSec = durSlider ? parseFloat(durSlider.value) : 2;
     const durationMs = Math.round(durationSec * 1000);
-    const intervalMs = 200;
-
-    // Send commands for the configured duration
-    let sent = 0;
-    const total = Math.ceil(durationMs / intervalMs);
-    send({ type: 'command', collar_name: collar, mode, intensity });
-    sent++;
-    const iv = setInterval(() => {
-      if (sent >= total) { clearInterval(iv); return; }
-      send({ type: 'command', collar_name: collar, mode, intensity });
-      sent++;
-    }, intervalMs);
+    send({ type: 'run_action', collar_name: collar, mode, intensity, duration_ms: durationMs });
   }
   btn.addEventListener('mousedown', fire);
   btn.addEventListener('touchstart', fire, { passive: false });
@@ -1517,6 +1564,19 @@ function updateNtpSettingsUi() {
   input.disabled = !enabled;
 }
 
+function updateRemoteControlSettingsUi() {
+  const enabled = document.getElementById('settings-remote-control-enabled').checked;
+  const urlRow = document.getElementById('settings-remote-control-url-row');
+  const urlInput = document.getElementById('settings-remote-control-url');
+  const validateRow = document.getElementById('settings-remote-control-validate-row');
+  const validateInput = document.getElementById('settings-remote-control-validate-cert');
+  const isWss = urlInput.value.trim().toLowerCase().startsWith('wss://');
+  urlRow.classList.toggle('settings-disabled', !enabled);
+  urlInput.disabled = !enabled;
+  validateRow.classList.toggle('settings-disabled', !enabled || !isWss);
+  validateInput.disabled = !enabled || !isWss;
+}
+
 function rebootDevice() {
   if (!confirm('Reboot the device? Active connections will be dropped.')) return;
   send({ type: 'reboot' });
@@ -1535,9 +1595,22 @@ function saveDeviceSettings() {
   const maxClients = parseInt(document.getElementById('settings-max-clients').value) || 8;
   const ntpEnabled = document.getElementById('settings-ntp-enabled').checked;
   const ntpServer = document.getElementById('settings-ntp-server').value.trim();
+  const remoteControlEnabled = document.getElementById('settings-remote-control-enabled').checked;
+  const remoteControlUrl = document.getElementById('settings-remote-control-url').value.trim();
+  const remoteControlValidateCert = document.getElementById('settings-remote-control-validate-cert').checked;
   if (ntpEnabled && !ntpServer) {
     alert('NTP server is required when time sync is enabled');
     return;
+  }
+  if (remoteControlEnabled) {
+    if (!remoteControlUrl) {
+      alert('Remote control URL is required when remote control is enabled');
+      return;
+    }
+    if (!/^wss?:\/\//i.test(remoteControlUrl)) {
+      alert('Remote control URL must start with ws:// or wss://');
+      return;
+    }
   }
   send({
     type: 'save_device_settings',
@@ -1553,6 +1626,10 @@ function saveDeviceSettings() {
       max_clients: maxClients,
       ntp_enabled: ntpEnabled,
       ntp_server: ntpServer,
+      remote_control_enabled: remoteControlEnabled,
+      remote_control_url: remoteControlUrl,
+      remote_control_validate_cert: remoteControlValidateCert,
+      record_event_log: document.getElementById('settings-record-event-log').checked,
     }
   });
 }
@@ -1570,7 +1647,12 @@ function handleDeviceSettings(msg) {
   document.getElementById('settings-max-clients').value = s.max_clients || 8;
   document.getElementById('settings-ntp-enabled').checked = s.ntp_enabled !== false;
   document.getElementById('settings-ntp-server').value = s.ntp_server || 'pool.ntp.org';
+  document.getElementById('settings-remote-control-enabled').checked = !!s.remote_control_enabled;
+  document.getElementById('settings-remote-control-url').value = s.remote_control_url || '';
+  document.getElementById('settings-remote-control-validate-cert').checked = s.remote_control_validate_cert !== false;
+  document.getElementById('settings-record-event-log').checked = !!s.record_event_log;
   updateNtpSettingsUi();
+  updateRemoteControlSettingsUi();
   const status = document.getElementById('settings-status');
   if (msg.reboot_required) {
     status.textContent = 'Saved. Reboot required to apply changes.';
@@ -1675,6 +1757,37 @@ function stopAllHeldButtons() {
   [...activeHoldStops].forEach(stop => stop());
 }
 
+function renderEventLog() {
+  const status = document.getElementById('event-log-status');
+  const list = document.getElementById('event-log-events');
+  if (!status || !list) return;
+
+  if (!eventLog.enabled) {
+    status.textContent = 'Recording off';
+    list.innerHTML = '<div class="event-log-empty">Enable "Record event log" in Settings to capture recent actions, presets, NTP syncs, and remote-control connectivity.</div>';
+    return;
+  }
+
+  status.textContent = `${eventLog.events.length}/100 events`;
+  if (eventLog.events.length === 0) {
+    list.innerHTML = '<div class="event-log-empty">No events recorded yet.</div>';
+    return;
+  }
+
+  list.innerHTML = '';
+  [...eventLog.events].reverse().forEach(entry => {
+    const item = document.createElement('div');
+    item.className = 'event-log-item';
+    item.innerHTML = `
+      <span class="ts mono">${esc(formatEventLogTime(entry))}</span>
+      <span class="src mono">${esc(formatEventLogSource(entry.source))}</span>
+      <span class="body">${esc(formatEventLogBody(entry))}</span>
+    `;
+    list.appendChild(item);
+  });
+  list.scrollTop = 0;
+}
+
 function renderDebug() {
   const toggle = document.getElementById('rf-debug-toggle');
   const status = document.getElementById('rf-debug-status');
@@ -1718,6 +1831,49 @@ function describeRfMode(event) {
   return 'unknown(' + event.mode_raw + ')';
 }
 
+function formatEventLogTime(entry) {
+  if (entry.unix_ms != null) {
+    const date = new Date(entry.unix_ms);
+    const hh = String(date.getHours()).padStart(2, '0');
+    const mm = String(date.getMinutes()).padStart(2, '0');
+    const ss = String(date.getSeconds()).padStart(2, '0');
+    const ms = String(date.getMilliseconds()).padStart(3, '0');
+    return `${hh}:${mm}:${ss}.${ms}`;
+  }
+  return formatDebugTime(entry.monotonic_ms);
+}
+
+function formatEventLogSource(source) {
+  if (source === 'local_ui') return 'local';
+  if (source === 'remote_control') return 'remote';
+  return 'system';
+}
+
+function formatEventLogBody(entry) {
+  switch (entry.event) {
+    case 'action': {
+      const duration = entry.duration_ms >= 1000
+        ? `${(entry.duration_ms / 1000).toFixed(1)}s`
+        : `${entry.duration_ms}ms`;
+      const intensity = entry.intensity == null ? '' : ` @ ${entry.intensity}%`;
+      return `${describeMode(entry.mode)} ${entry.collar_name} ${duration}${intensity}`;
+    }
+    case 'preset_run':
+      return `Preset ${entry.preset_name} started`;
+    case 'ntp_sync':
+      return `NTP sync via ${entry.server}`;
+    case 'remote_control_connection':
+      if (entry.connected) {
+        return `Remote control connected ${entry.url}`;
+      }
+      return entry.reason
+        ? `Remote control disconnected ${entry.reason}`
+        : 'Remote control disconnected';
+    default:
+      return 'Unknown event';
+  }
+}
+
 function parseCollarId(s) {
   s = s.trim();
   let n;
@@ -1733,8 +1889,7 @@ function parseCollarId(s) {
   return n;
 }
 
-function setupHoldButton(btn, onFire) {
-  let interval = null;
+function setupHoldButton(btn) {
   function collarCommandPayload() {
     const collar = btn.dataset.collar;
     const mode = btn.dataset.mode;
@@ -1745,18 +1900,15 @@ function setupHoldButton(btn, onFire) {
   function start(e) {
     e.preventDefault();
     if (isRfLocked()) return;
-    if (interval !== null) return;
+    if (activeHoldStops.has(stop)) return;
     activeHoldStops.add(stop);
-    send({ type: 'button_event', action: 'press', ...collarCommandPayload() });
-    onFire();
-    interval = setInterval(onFire, 250);
+    send({ type: 'start_action', ...collarCommandPayload() });
   }
   function stop() {
-    if (interval) {
-      clearInterval(interval);
-      interval = null;
-      activeHoldStops.delete(stop);
-      send({ type: 'button_event', action: 'release', ...collarCommandPayload() });
+    if (!activeHoldStops.has(stop)) return;
+    activeHoldStops.delete(stop);
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      send({ type: 'stop_action', collar_name: btn.dataset.collar, mode: btn.dataset.mode });
     }
   }
   btn.addEventListener('mousedown', start);
@@ -1783,6 +1935,8 @@ function describePresetStep(step) {
 
 // --- Init ---
 renderAppVersion();
+renderRemoteControlStatus();
+renderEventLog();
 connect();
 
 // Tooltip: click/tap to show, click/tap elsewhere to hide

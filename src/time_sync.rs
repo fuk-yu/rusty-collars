@@ -10,7 +10,10 @@ pub struct TimeSyncHandle {
     _sntp: EspSntp<'static>,
 }
 
-pub fn maybe_start(settings: &DeviceSettings) -> Result<Option<TimeSyncHandle>> {
+pub fn maybe_start<F>(settings: &DeviceSettings, on_sync: F) -> Result<Option<TimeSyncHandle>>
+where
+    F: Fn(String) + Send + 'static,
+{
     if !settings.ntp_enabled {
         info!("NTP time sync disabled");
         return Ok(None);
@@ -29,6 +32,7 @@ pub fn maybe_start(settings: &DeviceSettings) -> Result<Option<TimeSyncHandle>> 
     let server_for_callback = server.to_string();
     let sntp = EspSntp::new_with_callback(&conf, move |_| {
         info!("NTP time synchronized via '{}'", server_for_callback);
+        on_sync(server_for_callback.clone());
     })?;
 
     unsafe {
