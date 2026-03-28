@@ -1,7 +1,7 @@
 //! Network abstraction: WiFi on ESP32/C6, Ethernet on P4, OpenETH on QEMU.
 
-use anyhow::Result;
 use crate::protocol::DeviceSettings;
+use anyhow::Result;
 use esp_idf_svc::eventloop::EspSystemEventLoop;
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
 use log::info;
@@ -67,7 +67,11 @@ pub fn connect(
     unsafe {
         // Initialize TCP/IP stack and default event loop (required before esp_netif/eth)
         let err = esp_idf_svc::sys::esp_netif_init();
-        assert_eq!(err, esp_idf_svc::sys::ESP_OK, "esp_netif_init failed: {err}");
+        assert_eq!(
+            err,
+            esp_idf_svc::sys::ESP_OK,
+            "esp_netif_init failed: {err}"
+        );
         let err = esp_idf_svc::sys::esp_event_loop_create_default();
         // ESP_ERR_INVALID_STATE means it's already created (e.g. by EspSystemEventLoop::take)
         assert!(
@@ -156,7 +160,10 @@ pub fn connect(
                 let ip = ip_info.ip.addr;
                 info!(
                     "Ethernet connected! IP: {}.{}.{}.{}",
-                    ip & 0xFF, (ip >> 8) & 0xFF, (ip >> 16) & 0xFF, (ip >> 24) & 0xFF
+                    ip & 0xFF,
+                    (ip >> 8) & 0xFF,
+                    (ip >> 16) & 0xFF,
+                    (ip >> 24) & 0xFF
                 );
                 break;
             }
@@ -189,7 +196,10 @@ pub fn connect(
 // --- OpenETH (QEMU virtual Ethernet, ESP32 only) ---
 
 #[cfg(esp32)]
-fn connect_qemu_eth(mac: esp_idf_svc::hal::mac::MAC<'static>, sys_loop: EspSystemEventLoop) -> Result<NetworkHandle> {
+fn connect_qemu_eth(
+    mac: esp_idf_svc::hal::mac::MAC<'static>,
+    sys_loop: EspSystemEventLoop,
+) -> Result<NetworkHandle> {
     #[cfg(esp_idf_eth_use_openeth)]
     {
         use esp_idf_svc::eth::{BlockingEth, EspEth, EthDriver};

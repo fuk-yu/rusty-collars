@@ -110,3 +110,8 @@ patch_elf_interpreters "$project_dir/.rustup/toolchains/esp"
 patch_elf_interpreters "$project_dir/.embuild/espressif/tools"
 write_xtensa_dispatcher
 write_xtensa_aliases
+
+while IFS= read -r clang_lib; do
+  export LIBCLANG_PATH="$clang_lib"
+  break
+done < <(find "$project_dir/.rustup/toolchains/esp" -type d -path '*/esp-clang/lib' | sort)

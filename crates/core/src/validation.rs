@@ -4,6 +4,7 @@ use anyhow::anyhow;
 use anyhow::Result;
 
 use crate::protocol::{Collar, ExportData, Preset, MAX_CHANNEL, MAX_INTENSITY};
+use crate::scheduling;
 
 pub fn validate_collar(collar: &Collar) -> Result<()> {
     if collar.name.trim().is_empty() {
@@ -39,6 +40,7 @@ pub fn validate_preset(preset: &Preset, collars: &[Collar]) -> Result<()> {
     }
 
     let known_collars: HashSet<&str> = collars.iter().map(|c| c.name.as_str()).collect();
+    let mut track_collars = HashSet::new();
     let mut runnable_steps = 0usize;
 
     for (track_index, track) in preset.tracks.iter().enumerate() {
@@ -54,6 +56,13 @@ pub fn validate_preset(preset: &Preset, collars: &[Collar]) -> Result<()> {
                 "Preset '{}' track {} references unknown collar '{}'",
                 preset.name,
                 track_index,
+                track.collar_name
+            ));
+        }
+        if !track_collars.insert(track.collar_name.as_str()) {
+            return Err(anyhow!(
+                "Preset '{}' uses collar '{}' in more than one track",
+                preset.name,
                 track.collar_name
             ));
         }
@@ -88,6 +97,8 @@ pub fn validate_preset(preset: &Preset, collars: &[Collar]) -> Result<()> {
             }
         }
     }
+
+    scheduling::schedule_preset_events(preset, collars)?;
 
     if runnable_steps == 0 {
         return Err(anyhow!(
@@ -201,10 +212,7 @@ mod tests {
         let collars = vec![collar("Rex", 0x1234, 0)];
         let p = preset(
             "test",
-            vec![track(
-                "Rex",
-                vec![step(PresetStepMode::Vibrate, 50, 1000)],
-            )],
+            vec![track("Rex", vec![step(PresetStepMode::Vibrate, 50, 1000)])],
         );
         assert!(validate_preset(&p, &collars).is_ok());
     }
@@ -214,10 +222,7 @@ mod tests {
         let collars = vec![collar("Rex", 0x1234, 0)];
         let p = preset(
             "",
-            vec![track(
-                "Rex",
-                vec![step(PresetStepMode::Vibrate, 50, 1000)],
-            )],
+            vec![track("Rex", vec![step(PresetStepMode::Vibrate, 50, 1000)])],
         );
         assert!(validate_preset(&p, &collars).is_err());
     }
@@ -243,6 +248,19 @@ mod tests {
     }
 
     #[test]
+    fn preset_duplicate_track_collar_rejected() {
+        let collars = vec![collar("Rex", 0x1234, 0), collar("Max", 0xABCD, 1)];
+        let p = preset(
+            "test",
+            vec![
+                track("Rex", vec![step(PresetStepMode::Vibrate, 50, 500)]),
+                track("Rex", vec![step(PresetStepMode::Beep, 0, 500)]),
+            ],
+        );
+        assert!(validate_preset(&p, &collars).is_err());
+    }
+
+    #[test]
     fn preset_empty_steps() {
         let collars = vec![collar("Rex", 0x1234, 0)];
         let p = preset("test", vec![track("Rex", vec![])]);
@@ -254,10 +272,7 @@ mod tests {
         let collars = vec![collar("Rex", 0x1234, 0)];
         let p = preset(
             "test",
-            vec![track(
-                "Rex",
-                vec![step(PresetStepMode::Vibrate, 50, 0)],
-            )],
+            vec![track("Rex", vec![step(PresetStepMode::Vibrate, 50, 0)])],
         );
         assert!(validate_preset(&p, &collars).is_err());
     }
@@ -267,10 +282,7 @@ mod tests {
         let collars = vec![collar("Rex", 0x1234, 0)];
         let p = preset(
             "test",
-            vec![track(
-                "Rex",
-                vec![step(PresetStepMode::Shock, 100, 1000)],
-            )],
+            vec![track("Rex", vec![step(PresetStepMode::Shock, 100, 1000)])],
         );
         assert!(validate_preset(&p, &collars).is_err());
     }
@@ -280,12 +292,19 @@ mod tests {
         let collars = vec![collar("Rex", 0x1234, 0)];
         let p = preset(
             "test",
-            vec![track(
-                "Rex",
-                vec![step(PresetStepMode::Shock, 99, 1000)],
-            )],
+            vec![track("Rex", vec![step(PresetStepMode::Shock, 99, 1000)])],
         );
         assert!(validate_preset(&p, &collars).is_ok());
+    }
+
+    #[test]
+    fn preset_command_shorter_than_rf_tx_rejected() {
+        let collars = vec![collar("Rex", 0x1234, 0)];
+        let p = preset(
+            "test",
+            vec![track("Rex", vec![step(PresetStepMode::Shock, 50, 129)])],
+        );
+        assert!(validate_preset(&p, &collars).is_err());
     }
 
     #[test]
@@ -293,10 +312,7 @@ mod tests {
         let collars = vec![collar("Rex", 0x1234, 0)];
         let p = preset(
             "test",
-            vec![track(
-                "Rex",
-                vec![step(PresetStepMode::Pause, 0, 1000)],
-            )],
+            vec![track("Rex", vec![step(PresetStepMode::Pause, 0, 1000)])],
         );
         assert!(validate_preset(&p, &collars).is_err());
     }
@@ -334,6 +350,19 @@ mod tests {
         assert!(validate_preset(&p, &collars).is_ok());
     }
 
+    #[test]
+    fn preset_overlapping_tracks_rejected() {
+        let collars = vec![collar("Rex", 0x1234, 0), collar("Max", 0xABCD, 1)];
+        let p = preset(
+            "test",
+            vec![
+                track("Rex", vec![step(PresetStepMode::Vibrate, 50, 500)]),
+                track("Max", vec![step(PresetStepMode::Vibrate, 50, 500)]),
+            ],
+        );
+        assert!(validate_preset(&p, &collars).is_err());
+    }
+
     // --- validate_presets ---
 
     #[test]
@@ -342,17 +371,11 @@ mod tests {
         let presets = vec![
             preset(
                 "test",
-                vec![track(
-                    "Rex",
-                    vec![step(PresetStepMode::Vibrate, 50, 1000)],
-                )],
+                vec![track("Rex", vec![step(PresetStepMode::Vibrate, 50, 1000)])],
             ),
             preset(
                 "test",
-                vec![track(
-                    "Rex",
-                    vec![step(PresetStepMode::Beep, 30, 500)],
-                )],
+                vec![track("Rex", vec![step(PresetStepMode::Beep, 30, 500)])],
             ),
         ];
         assert!(validate_presets(&presets, &collars).is_err());
@@ -366,10 +389,7 @@ mod tests {
             collars: vec![collar("Rex", 0x1234, 0)],
             presets: vec![preset(
                 "test",
-                vec![track(
-                    "Rex",
-                    vec![step(PresetStepMode::Vibrate, 50, 1000)],
-                )],
+                vec![track("Rex", vec![step(PresetStepMode::Vibrate, 50, 1000)])],
             )],
         };
         assert!(validate_export_data(&data).is_ok());

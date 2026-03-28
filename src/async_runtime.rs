@@ -19,14 +19,12 @@ impl picoserve::time::Timer<AsyncIoRuntime> for AsyncIoTimer {
         duration: picoserve::time::Duration,
         future: F,
     ) -> Result<F::Output, picoserve::time::TimeoutError> {
-        let timeout = async_io::Timer::after(std::time::Duration::from_millis(duration.as_millis()));
-        futures_lite::future::or(
-            async { Ok(future.await) },
-            async {
-                timeout.await;
-                Err(picoserve::time::TimeoutError)
-            },
-        )
+        let timeout =
+            async_io::Timer::after(std::time::Duration::from_millis(duration.as_millis()));
+        futures_lite::future::or(async { Ok(future.await) }, async {
+            timeout.await;
+            Err(picoserve::time::TimeoutError)
+        })
         .await
     }
 }

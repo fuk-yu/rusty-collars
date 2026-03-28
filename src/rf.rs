@@ -236,7 +236,8 @@ impl RfReceiver {
         }
 
         if let Some((last_raw, last_at_us)) = self.last_frame {
-            if last_raw == raw && pulse_end_us.saturating_sub(last_at_us) <= DUPLICATE_FRAME_WINDOW_US
+            if last_raw == raw
+                && pulse_end_us.saturating_sub(last_at_us) <= DUPLICATE_FRAME_WINDOW_US
             {
                 return None;
             }

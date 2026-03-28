@@ -27,20 +27,34 @@ pub struct DeviceSettings {
     pub max_clients: u8,
 }
 
-fn default_true() -> bool { true }
-fn default_ap_password() -> String { "rfcollars".to_string() }
-fn default_max_clients() -> u8 { 8 }
-fn default_rx_led_pin() -> u8 { DeviceSettings::default_pins().1 }
+fn default_true() -> bool {
+    true
+}
+fn default_ap_password() -> String {
+    "rfcollars".to_string()
+}
+fn default_max_clients() -> u8 {
+    8
+}
+fn default_rx_led_pin() -> u8 {
+    DeviceSettings::default_pins().1
+}
 
 impl DeviceSettings {
     /// Returns (tx_led_pin, rx_led_pin, rf_tx_pin, rf_rx_pin)
     pub fn default_pins() -> (u8, u8, u8, u8) {
         #[cfg(esp32c6)]
-        { (8, 8, 10, 11) } // C6: single LED on 8 for both
+        {
+            (8, 8, 10, 11)
+        } // C6: single LED on 8 for both
         #[cfg(esp32p4)]
-        { (14, 17, 15, 18) } // P4-ETH: TX LED=GPIO17, RX LED=GPIO18, RF TX=GPIO6, RF RX=GPIO5
+        {
+            (14, 17, 15, 18)
+        } // P4-ETH: TX LED=GPIO17, RX LED=GPIO18, RF TX=GPIO6, RF RX=GPIO5
         #[cfg(not(any(esp32c6, esp32p4)))]
-        { (2, 2, 16, 15) } // ESP32: single LED on 2 for both
+        {
+            (2, 2, 16, 15)
+        } // ESP32: single LED on 2 for both
     }
 }
 
@@ -281,7 +295,10 @@ pub struct RfDebugFrame {
 /// Encode a Type-1 RF frame (pure math, no hardware dependency).
 /// Returns 5 bytes: [id_hi, id_lo, channel<<4|mode, intensity, checksum].
 pub fn encode_rf_frame(collar_id: u16, channel: u8, mode: u8, intensity: u8) -> [u8; 5] {
-    assert!(intensity <= MAX_INTENSITY, "intensity {intensity} exceeds MAX_INTENSITY {MAX_INTENSITY}");
+    assert!(
+        intensity <= MAX_INTENSITY,
+        "intensity {intensity} exceeds MAX_INTENSITY {MAX_INTENSITY}"
+    );
     let b0 = (collar_id >> 8) as u8;
     let b1 = (collar_id & 0xFF) as u8;
     let b2 = (channel << 4) | (mode & 0x0F);
@@ -296,7 +313,11 @@ pub fn decode_rf_frame(raw: &[u8; 5]) -> (u16, u8, u8, u8, bool) {
     let channel = raw[2] >> 4;
     let mode_raw = raw[2] & 0x0F;
     let intensity = raw[3];
-    let checksum_ok = raw[4] == raw[0].wrapping_add(raw[1]).wrapping_add(raw[2]).wrapping_add(raw[3]);
+    let checksum_ok = raw[4]
+        == raw[0]
+            .wrapping_add(raw[1])
+            .wrapping_add(raw[2])
+            .wrapping_add(raw[3]);
     (collar_id, channel, mode_raw, intensity, checksum_ok)
 }
 
@@ -359,18 +380,34 @@ mod tests {
             tracks: vec![PresetTrack {
                 collar_name: "Rex".to_string(),
                 steps: vec![
-                    PresetStep { mode: PresetStepMode::Shock, intensity: 50, duration_ms: 1000 },
-                    PresetStep { mode: PresetStepMode::Vibrate, intensity: 30, duration_ms: 500 },
-                    PresetStep { mode: PresetStepMode::Beep, intensity: 99, duration_ms: 200 },
-                    PresetStep { mode: PresetStepMode::Pause, intensity: 42, duration_ms: 300 },
+                    PresetStep {
+                        mode: PresetStepMode::Shock,
+                        intensity: 50,
+                        duration_ms: 1000,
+                    },
+                    PresetStep {
+                        mode: PresetStepMode::Vibrate,
+                        intensity: 30,
+                        duration_ms: 500,
+                    },
+                    PresetStep {
+                        mode: PresetStepMode::Beep,
+                        intensity: 99,
+                        duration_ms: 200,
+                    },
+                    PresetStep {
+                        mode: PresetStepMode::Pause,
+                        intensity: 42,
+                        duration_ms: 300,
+                    },
                 ],
             }],
         };
         preset.normalize();
         assert_eq!(preset.tracks[0].steps[0].intensity, 50); // shock: unchanged
         assert_eq!(preset.tracks[0].steps[1].intensity, 30); // vibrate: unchanged
-        assert_eq!(preset.tracks[0].steps[2].intensity, 0);  // beep: zeroed
-        assert_eq!(preset.tracks[0].steps[3].intensity, 0);  // pause: zeroed
+        assert_eq!(preset.tracks[0].steps[2].intensity, 0); // beep: zeroed
+        assert_eq!(preset.tracks[0].steps[3].intensity, 0); // pause: zeroed
     }
 
     // --- RF frame encoding ---
@@ -382,8 +419,14 @@ mod tests {
         assert_eq!(frame[1], 0x34); // id lo
         assert_eq!(frame[2], 0x01); // ch0 | shock
         assert_eq!(frame[3], 50); // intensity
-        // checksum: 0x12 + 0x34 + 0x01 + 0x32 = 0x79
-        assert_eq!(frame[4], 0x12u8.wrapping_add(0x34).wrapping_add(0x01).wrapping_add(50));
+                                  // checksum: 0x12 + 0x34 + 0x01 + 0x32 = 0x79
+        assert_eq!(
+            frame[4],
+            0x12u8
+                .wrapping_add(0x34)
+                .wrapping_add(0x01)
+                .wrapping_add(50)
+        );
     }
 
     #[test]

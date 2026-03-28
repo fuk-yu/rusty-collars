@@ -1,11 +1,12 @@
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use async_broadcast::Sender as BroadcastSender;
-use picoserve::futures::Either;
 use log::{error, info, warn};
+use picoserve::futures::Either;
 use picoserve::response::ws::{self, Message};
 use picoserve::routing::{get, get_service, post_service};
 
@@ -23,6 +24,7 @@ use crate::validation;
 const FRONTEND_HTML_GZ: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/frontend.html.gz"));
 const MAX_RF_DEBUG_EVENTS: usize = 100;
 const RF_STOP_LOCKOUT_MS: u64 = 10_000;
+const RF_DEBUG_DISABLED_SLEEP_MS: u64 = 100;
 const HTTP_BUF_SIZE: usize = 1024;
 const WS_BUF_SIZE: usize = 2048;
 
@@ -41,26 +43,30 @@ pub struct DomainState {
     pub preset_name: Option<String>,
     pub rf_lockout_until_ms: u64,
     pub rf_debug_events: Vec<RfDebugFrame>,
-    pub storage: Storage,
 }
 
 #[derive(Clone)]
 pub struct AppCtx {
     pub domain: Arc<Mutex<DomainState>>,
+    pub storage: Arc<Mutex<Storage>>,
     pub rf: Arc<Mutex<RfTransmitter>>,
     pub tx_led: Arc<Mutex<Led>>,
     pub rx_led: Arc<Mutex<Led>>,
     pub broadcast_tx: BroadcastSender<BroadcastMsg>,
     pub rf_debug_enabled: Arc<AtomicBool>,
     pub rf_debug_listener_count: Arc<AtomicU32>,
+    pub rf_debug_worker_spawned: Arc<AtomicBool>,
     pub rf_receiver: Arc<Mutex<Option<RfReceiver>>>,
     pub preset_run_id: Arc<AtomicU32>,
-    /// Monotonic connection ID, set before each serve() call. Single-threaded, so no race.
-    pub last_conn_id: Arc<AtomicU32>,
-    /// IP addresses of last accepted connection (set before serve, read by WS handler).
-    pub last_conn_addr: Arc<Mutex<String>>,
     /// Active WS client addresses, keyed by conn_id.
     pub ws_clients: Arc<Mutex<Vec<(u32, String)>>>,
+}
+
+#[derive(Clone)]
+pub struct ConnectionState {
+    pub app: AppCtx,
+    pub conn_id: u32,
+    pub conn_addr: String,
 }
 
 impl AppCtx {
@@ -83,18 +89,17 @@ impl AppCtx {
                 preset_name: None,
                 rf_lockout_until_ms: 0,
                 rf_debug_events: Vec::new(),
-                storage,
             })),
+            storage: Arc::new(Mutex::new(storage)),
             rf,
             tx_led,
             rx_led,
             broadcast_tx,
             rf_debug_enabled: Arc::new(AtomicBool::new(false)),
             rf_debug_listener_count: Arc::new(AtomicU32::new(0)),
+            rf_debug_worker_spawned: Arc::new(AtomicBool::new(false)),
             rf_receiver: Arc::new(Mutex::new(Some(rf_receiver))),
             preset_run_id: Arc::new(AtomicU32::new(0)),
-            last_conn_id: Arc::new(AtomicU32::new(0)),
-            last_conn_addr: Arc::new(Mutex::new(String::new())),
             ws_clients: Arc::new(Mutex::new(Vec::new())),
         }
     }
@@ -167,9 +172,32 @@ fn rf_send_with_led(
     intensity: u8,
 ) -> Result<()> {
     tx_led.lock().unwrap().set(true);
-    let result = rf.lock().unwrap().send_command(collar_id, channel, mode_byte, intensity);
+    let result = rf
+        .lock()
+        .unwrap()
+        .send_command(collar_id, channel, mode_byte, intensity);
     tx_led.lock().unwrap().set(false);
     result.map_err(Into::into)
+}
+
+fn save_collars(ctx: &AppCtx, collars: &[Collar]) {
+    if let Err(err) = ctx.storage.lock().unwrap().save_collars(collars) {
+        error!("NVS save_collars failed: {err:#}");
+    }
+}
+
+fn save_presets(ctx: &AppCtx, presets: &[Preset]) {
+    if let Err(err) = ctx.storage.lock().unwrap().save_presets(presets) {
+        error!("NVS save_presets failed: {err:#}");
+    }
+}
+
+fn save_settings(ctx: &AppCtx, settings: &DeviceSettings) -> Result<()> {
+    ctx.storage
+        .lock()
+        .unwrap()
+        .save_settings(settings)
+        .map_err(Into::into)
 }
 
 // --- picoserve app ---
@@ -177,7 +205,8 @@ fn rf_send_with_led(
 // SVG favicon: zap emoji on dark background
 const FAVICON_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="6" fill="#1a1a2e"/><text x="16" y="24" font-size="22" text-anchor="middle">&#x26A1;</text></svg>"##;
 
-pub fn make_app() -> picoserve::Router<impl picoserve::routing::PathRouter<AppCtx>, AppCtx> {
+pub fn make_app(
+) -> picoserve::Router<impl picoserve::routing::PathRouter<ConnectionState>, ConnectionState> {
     picoserve::Router::new()
         .route("/", get_service(FrontendService))
         .route("/favicon.ico", get_service(FaviconService))
@@ -192,13 +221,13 @@ pub fn make_app() -> picoserve::Router<impl picoserve::routing::PathRouter<AppCt
 
 struct FrontendService;
 
-impl picoserve::routing::RequestHandlerService<AppCtx> for FrontendService {
+impl picoserve::routing::RequestHandlerService<ConnectionState> for FrontendService {
     async fn call_request_handler_service<
         R: picoserve::io::Read,
         W: picoserve::response::ResponseWriter<Error = R::Error>,
     >(
         &self,
-        _state: &AppCtx,
+        _state: &ConnectionState,
         _path_parameters: (),
         request: picoserve::request::Request<'_, R>,
         response_writer: W,
@@ -236,13 +265,13 @@ impl picoserve::response::Content for SvgContent {
 
 struct FaviconService;
 
-impl picoserve::routing::RequestHandlerService<AppCtx> for FaviconService {
+impl picoserve::routing::RequestHandlerService<ConnectionState> for FaviconService {
     async fn call_request_handler_service<
         R: picoserve::io::Read,
         W: picoserve::response::ResponseWriter<Error = R::Error>,
     >(
         &self,
-        _state: &AppCtx,
+        _state: &ConnectionState,
         _path_parameters: (),
         request: picoserve::request::Request<'_, R>,
         response_writer: W,
@@ -279,13 +308,13 @@ impl picoserve::response::Content for TextContent {
     }
 }
 
-impl picoserve::routing::RequestHandlerService<AppCtx> for OtaService {
+impl picoserve::routing::RequestHandlerService<ConnectionState> for OtaService {
     async fn call_request_handler_service<
         R: picoserve::io::Read,
         W: picoserve::response::ResponseWriter<Error = R::Error>,
     >(
         &self,
-        _state: &AppCtx,
+        _state: &ConnectionState,
         _path_parameters: (),
         mut request: picoserve::request::Request<'_, R>,
         response_writer: W,
@@ -310,11 +339,11 @@ impl picoserve::routing::RequestHandlerService<AppCtx> for OtaService {
         // Read body with a long timeout (120s for large firmware uploads)
         let result = {
             let body = request.body_connection.body();
-            let mut reader = body
-                .reader()
-                .with_different_timeout_signal(Box::pin(async_io::Timer::after(
-                    Duration::from_secs(120),
-                )));
+            let mut reader =
+                body.reader()
+                    .with_different_timeout_signal(Box::pin(async_io::Timer::after(
+                        Duration::from_secs(120),
+                    )));
             ota::perform_update(content_length, &mut reader).await
         };
 
@@ -326,7 +355,9 @@ impl picoserve::routing::RequestHandlerService<AppCtx> for OtaService {
                 // Schedule reboot after response is sent
                 std::thread::spawn(|| {
                     std::thread::sleep(Duration::from_millis(500));
-                    unsafe { esp_idf_svc::sys::esp_restart(); }
+                    unsafe {
+                        esp_idf_svc::sys::esp_restart();
+                    }
                 });
                 response_writer
                     .write_response(
@@ -358,22 +389,23 @@ impl picoserve::routing::RequestHandlerService<AppCtx> for OtaService {
 
 struct WsHandler;
 
-impl ws::WebSocketCallbackWithState<AppCtx> for WsHandler {
-    async fn run_with_state<
-        R: picoserve::io::Read,
-        W: picoserve::io::Write<Error = R::Error>,
-    >(
+impl ws::WebSocketCallbackWithState<ConnectionState> for WsHandler {
+    async fn run_with_state<R: picoserve::io::Read, W: picoserve::io::Write<Error = R::Error>>(
         self,
-        ctx: &AppCtx,
+        state: &ConnectionState,
         mut rx: ws::SocketRx<R>,
         mut tx: ws::SocketTx<W>,
     ) -> Result<(), W::Error> {
-        let ws_id = ctx.last_conn_id.load(Ordering::Relaxed);
-        let ws_addr = ctx.last_conn_addr.lock().unwrap().clone();
+        let ctx = &state.app;
+        let ws_id = state.conn_id;
+        let ws_addr = state.conn_addr.clone();
         info!("[#{ws_id}] WebSocket connected from {ws_addr}");
 
         // Register this client
-        ctx.ws_clients.lock().unwrap().push((ws_id, ws_addr.clone()));
+        ctx.ws_clients
+            .lock()
+            .unwrap()
+            .push((ws_id, ws_addr.clone()));
 
         let state_json = ctx.state_json();
         tx.send_text(&state_json).await?;
@@ -387,13 +419,17 @@ impl ws::WebSocketCallbackWithState<AppCtx> for WsHandler {
         loop {
             match rx.next_message(&mut buf, broadcast_rx.recv()).await {
                 Ok(Either::First(Ok(Message::Text(text)))) => {
-                    if let Err(e) = handle_text_message(ctx, &mut tx, text, &mut listening_rf_debug).await {
+                    if let Err(e) =
+                        handle_text_message(ctx, &mut tx, text, &mut listening_rf_debug).await
+                    {
                         warn!("WS handler error: {e:#}");
                         break;
                     }
                 }
                 Ok(Either::First(Ok(Message::Binary(_)))) => {}
-                Ok(Either::First(Ok(Message::Ping(data)))) => { tx.send_pong(data).await?; }
+                Ok(Either::First(Ok(Message::Ping(data)))) => {
+                    tx.send_pong(data).await?;
+                }
                 Ok(Either::First(Ok(Message::Pong(_)))) => {}
                 Ok(Either::First(Ok(Message::Close(_)))) => break,
                 Ok(Either::First(Err(e))) => {
@@ -419,7 +455,10 @@ impl ws::WebSocketCallbackWithState<AppCtx> for WsHandler {
         }
 
         // Deregister this client
-        ctx.ws_clients.lock().unwrap().retain(|(id, _)| *id != ws_id);
+        ctx.ws_clients
+            .lock()
+            .unwrap()
+            .retain(|(id, _)| *id != ws_id);
 
         info!("[#{ws_id}] WebSocket disconnected from {ws_addr}");
         Ok(())
@@ -442,33 +481,75 @@ async fn handle_text_message<W: picoserve::io::Write>(
     };
 
     match msg {
-        ClientMessage::Command { collar_name, mode, intensity } => {
+        ClientMessage::Command {
+            collar_name,
+            mode,
+            intensity,
+        } => {
             let (collar, lockout) = {
                 let d = ctx.domain.lock().unwrap();
-                (d.collars.iter().find(|c| c.name == collar_name).cloned(), rf_lockout_remaining_ms(&d))
+                (
+                    d.collars.iter().find(|c| c.name == collar_name).cloned(),
+                    rf_lockout_remaining_ms(&d),
+                )
             };
-            if lockout > 0 { return Ok(()); }
+            if lockout > 0 {
+                return Ok(());
+            }
             if intensity > protocol::MAX_INTENSITY {
-                send_error(tx, format!("Intensity {} exceeds max {}", intensity, protocol::MAX_INTENSITY)).await?;
+                send_error(
+                    tx,
+                    format!(
+                        "Intensity {} exceeds max {}",
+                        intensity,
+                        protocol::MAX_INTENSITY
+                    ),
+                )
+                .await?;
                 return Ok(());
             }
             match collar {
                 Some(c) => {
-                    if let Err(e) = rf_send_with_led(&ctx.rf, &ctx.tx_led, c.collar_id, c.channel, mode.to_rf_byte(), intensity) { error!("RF send error: {e:#}"); }
+                    if let Err(e) = rf_send_with_led(
+                        &ctx.rf,
+                        &ctx.tx_led,
+                        c.collar_id,
+                        c.channel,
+                        mode.to_rf_byte(),
+                        intensity,
+                    ) {
+                        error!("RF send error: {e:#}");
+                    }
                 }
                 None => send_error(tx, format!("Unknown collar: {collar_name}")).await?,
             }
         }
 
-        ClientMessage::ButtonEvent { collar_name, mode, intensity, action } => {
+        ClientMessage::ButtonEvent {
+            collar_name,
+            mode,
+            intensity,
+            action,
+        } => {
             if cfg!(debug_assertions) {
-                info!("Button {:?}: collar={collar_name} mode={mode:?} intensity={intensity}", action);
+                info!(
+                    "Button {:?}: collar={collar_name} mode={mode:?} intensity={intensity}",
+                    action
+                );
             }
         }
 
-        ClientMessage::AddCollar { name, collar_id, channel } => {
-            let collar = Collar { name, collar_id, channel };
-            {
+        ClientMessage::AddCollar {
+            name,
+            collar_id,
+            channel,
+        } => {
+            let collar = Collar {
+                name,
+                collar_id,
+                channel,
+            };
+            let collars = {
                 let mut d = ctx.domain.lock().unwrap();
                 if let Err(e) = validation::validate_collar(&collar) {
                     drop(d);
@@ -481,15 +562,24 @@ async fn handle_text_message<W: picoserve::io::Write>(
                     return Ok(());
                 }
                 d.collars.push(collar);
-                d.storage.save_collars(&d.collars).ok();
-            }
-            send_state(ctx, tx).await?;
+                d.collars.clone()
+            };
+            save_collars(ctx, &collars);
             ctx.broadcast_state();
         }
 
-        ClientMessage::UpdateCollar { original_name, name, collar_id, channel } => {
-            let updated = Collar { name, collar_id, channel };
-            {
+        ClientMessage::UpdateCollar {
+            original_name,
+            name,
+            collar_id,
+            channel,
+        } => {
+            let updated = Collar {
+                name,
+                collar_id,
+                channel,
+            };
+            let (collars, presets) = {
                 let mut d = ctx.domain.lock().unwrap();
                 let Some(idx) = d.collars.iter().position(|c| c.name == original_name) else {
                     drop(d);
@@ -501,7 +591,11 @@ async fn handle_text_message<W: picoserve::io::Write>(
                     send_error(tx, e.to_string()).await?;
                     return Ok(());
                 }
-                if d.collars.iter().enumerate().any(|(i, c)| i != idx && c.name == updated.name) {
+                if d.collars
+                    .iter()
+                    .enumerate()
+                    .any(|(i, c)| i != idx && c.name == updated.name)
+                {
                     drop(d);
                     send_error(tx, format!("Collar '{}' already exists", updated.name)).await?;
                     return Ok(());
@@ -517,17 +611,20 @@ async fn handle_text_message<W: picoserve::io::Write>(
                     }
                 }
                 stop_active_preset(&mut d, &ctx.preset_run_id);
-                d.storage.save_collars(&d.collars).ok();
-                d.storage.save_presets(&d.presets).ok();
-            }
-            send_state(ctx, tx).await?;
+                (d.collars.clone(), d.presets.clone())
+            };
+            save_collars(ctx, &collars);
+            save_presets(ctx, &presets);
             ctx.broadcast_state();
         }
 
         ClientMessage::DeleteCollar { name } => {
-            {
+            let collars = {
                 let mut d = ctx.domain.lock().unwrap();
-                if d.presets.iter().any(|p| p.tracks.iter().any(|t| t.collar_name == name)) {
+                if d.presets
+                    .iter()
+                    .any(|p| p.tracks.iter().any(|t| t.collar_name == name))
+                {
                     drop(d);
                     send_error(tx, format!("Cannot delete '{name}': presets reference it")).await?;
                     return Ok(());
@@ -540,22 +637,28 @@ async fn handle_text_message<W: picoserve::io::Write>(
                     return Ok(());
                 }
                 stop_active_preset(&mut d, &ctx.preset_run_id);
-                d.storage.save_collars(&d.collars).ok();
-            }
-            send_state(ctx, tx).await?;
+                d.collars.clone()
+            };
+            save_collars(ctx, &collars);
             ctx.broadcast_state();
         }
 
-        ClientMessage::SavePreset { original_name, mut preset } => {
+        ClientMessage::SavePreset {
+            original_name,
+            mut preset,
+        } => {
             preset.normalize();
-            {
+            let presets = {
                 let mut d = ctx.domain.lock().unwrap();
                 if let Err(e) = validation::validate_preset(&preset, &d.collars) {
                     drop(d);
                     send_error(tx, e.to_string()).await?;
                     return Ok(());
                 }
-                let orig = original_name.as_deref().map(str::trim).filter(|n| !n.is_empty());
+                let orig = original_name
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|n| !n.is_empty());
                 let mut updated = d.presets.clone();
                 if let Some(orig) = orig {
                     let Some(idx) = updated.iter().position(|p| p.name == orig) else {
@@ -563,7 +666,11 @@ async fn handle_text_message<W: picoserve::io::Write>(
                         send_error(tx, format!("Unknown preset: {orig}")).await?;
                         return Ok(());
                     };
-                    if updated.iter().enumerate().any(|(i, p)| i != idx && p.name == preset.name) {
+                    if updated
+                        .iter()
+                        .enumerate()
+                        .any(|(i, p)| i != idx && p.name == preset.name)
+                    {
                         drop(d);
                         send_error(tx, format!("Preset '{}' already exists", preset.name)).await?;
                         return Ok(());
@@ -581,27 +688,33 @@ async fn handle_text_message<W: picoserve::io::Write>(
                 }
                 stop_active_preset(&mut d, &ctx.preset_run_id);
                 d.presets = updated;
-                d.storage.save_presets(&d.presets).ok();
-            }
-            send_state(ctx, tx).await?;
+                d.presets.clone()
+            };
+            save_presets(ctx, &presets);
             ctx.broadcast_state();
         }
 
         ClientMessage::Ping { nonce } => {
-            let client_ips: Vec<String> = ctx.ws_clients.lock().unwrap()
-                .iter().map(|(_, addr)| addr.clone()).collect();
+            let client_ips: Vec<String> = ctx
+                .ws_clients
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|(_, addr)| addr.clone())
+                .collect();
             let msg = serde_json::to_string(&ServerMessage::Pong {
                 nonce,
                 server_uptime_s: uptime_seconds(),
                 free_heap_bytes: free_heap(),
                 connected_clients: client_ips.len() as u32,
                 client_ips,
-            }).unwrap();
+            })
+            .unwrap();
             tx.send_text(&msg).await?;
         }
 
         ClientMessage::DeletePreset { name } => {
-            {
+            let presets = {
                 let mut d = ctx.domain.lock().unwrap();
                 let before = d.presets.len();
                 d.presets.retain(|p| p.name != name);
@@ -611,14 +724,14 @@ async fn handle_text_message<W: picoserve::io::Write>(
                     return Ok(());
                 }
                 stop_active_preset(&mut d, &ctx.preset_run_id);
-                d.storage.save_presets(&d.presets).ok();
-            }
-            send_state(ctx, tx).await?;
+                d.presets.clone()
+            };
+            save_presets(ctx, &presets);
             ctx.broadcast_state();
         }
 
         ClientMessage::RunPreset { name } => {
-            let (preset, collars, run_id) = {
+            let (preset_name, events, run_id) = {
                 let mut d = ctx.domain.lock().unwrap();
                 if rf_lockout_remaining_ms(&d) > 0 {
                     drop(d);
@@ -635,9 +748,17 @@ async fn handle_text_message<W: picoserve::io::Write>(
                     send_error(tx, e.to_string()).await?;
                     return Ok(());
                 }
+                let events = match scheduling::schedule_preset_events(&preset, &d.collars) {
+                    Ok(events) => events,
+                    Err(err) => {
+                        drop(d);
+                        send_error(tx, err.to_string()).await?;
+                        return Ok(());
+                    }
+                };
                 let run_id = ctx.preset_run_id.fetch_add(1, Ordering::SeqCst) + 1;
                 d.preset_name = Some(name.clone());
-                (preset, d.collars.clone(), run_id)
+                (preset.name.clone(), events, run_id)
             };
 
             let ctx2 = ctx.clone();
@@ -645,17 +766,17 @@ async fn handle_text_message<W: picoserve::io::Write>(
                 .name("preset".into())
                 .stack_size(32768)
                 .spawn(move || {
-                    run_preset(&preset, &collars, &ctx2, run_id);
+                    run_preset(&preset_name, events, &ctx2, run_id);
                     if ctx2.preset_run_id.load(Ordering::SeqCst) == run_id {
                         let mut d = ctx2.domain.lock().unwrap();
-                        if d.preset_name.as_deref() == Some(preset.name.as_str()) {
+                        if d.preset_name.as_deref() == Some(preset_name.as_str()) {
                             d.preset_name = None;
                         }
                     }
                     ctx2.broadcast_state();
-                }).ok();
+                })
+                .ok();
 
-            send_state(ctx, tx).await?;
             ctx.broadcast_state();
         }
 
@@ -665,7 +786,6 @@ async fn handle_text_message<W: picoserve::io::Write>(
                 ctx.preset_run_id.fetch_add(1, Ordering::SeqCst);
                 d.preset_name = None;
             }
-            send_state(ctx, tx).await?;
             ctx.broadcast_state();
         }
 
@@ -674,18 +794,14 @@ async fn handle_text_message<W: picoserve::io::Write>(
                 let mut d = ctx.domain.lock().unwrap();
                 stop_all_transmissions(&mut d, &ctx.preset_run_id);
             }
-            send_state(ctx, tx).await?;
             ctx.broadcast_state();
         }
 
         ClientMessage::StartRfDebug => {
             *listening_rf_debug = true;
-            let prev_count = ctx.rf_debug_listener_count.fetch_add(1, Ordering::SeqCst);
+            ctx.rf_debug_listener_count.fetch_add(1, Ordering::SeqCst);
             ctx.rf_debug_enabled.store(true, Ordering::SeqCst);
-            // Spawn RF debug worker on first listener (lazy - saves 16KB stack when unused)
-            if prev_count == 0 {
-                spawn_rf_debug_worker(ctx);
-            }
+            ensure_rf_debug_worker(ctx);
             let json = ctx.rf_debug_state_json(true);
             tx.send_text(&json).await?;
         }
@@ -713,7 +829,9 @@ async fn handle_text_message<W: picoserve::io::Write>(
             tx.send_text(r#"{"type":"state","rebooting":true}"#).await?;
             // Small delay to let the response flush
             async_io::Timer::after(Duration::from_millis(200)).await;
-            unsafe { esp_idf_svc::sys::esp_restart(); }
+            unsafe {
+                esp_idf_svc::sys::esp_restart();
+            }
         }
 
         ClientMessage::GetDeviceSettings => {
@@ -721,57 +839,65 @@ async fn handle_text_message<W: picoserve::io::Write>(
             let msg = serde_json::to_string(&ServerMessage::DeviceSettings {
                 settings: d.device_settings.clone(),
                 reboot_required: false,
-            }).unwrap();
+            })
+            .unwrap();
             tx.send_text(&msg).await?;
         }
 
         ClientMessage::SaveDeviceSettings { settings } => {
             info!("Saving device settings...");
-            let (msg, save_err) = {
+            let settings_to_save = settings.clone();
+            let msg = {
                 let mut d = ctx.domain.lock().unwrap();
                 let changed = d.device_settings != settings;
-                d.device_settings = settings.clone();
-                let save_err = d.storage.save_settings(&settings).err();
-                let msg = serde_json::to_string(&ServerMessage::DeviceSettings {
-                    settings,
+                d.device_settings = settings_to_save.clone();
+                serde_json::to_string(&ServerMessage::DeviceSettings {
+                    settings: settings_to_save.clone(),
                     reboot_required: changed,
-                }).unwrap();
-                (msg, save_err)
-                // mutex dropped here
+                })
+                .unwrap()
             };
-            if let Some(e) = save_err {
-                error!("NVS save_settings failed: {e:#}");
-            } else {
-                info!("Device settings saved to NVS");
+            match save_settings(ctx, &settings_to_save) {
+                Ok(()) => info!("Device settings saved to NVS"),
+                Err(err) => error!("NVS save_settings failed: {err:#}"),
             }
             tx.send_text(&msg).await?;
         }
 
         ClientMessage::ReorderPresets { names } => {
-            {
+            let presets = {
                 let mut d = ctx.domain.lock().unwrap();
-                let mut reordered = Vec::with_capacity(d.presets.len());
-                for name in &names {
-                    if let Some(idx) = d.presets.iter().position(|p| &p.name == name) {
-                        reordered.push(d.presets[idx].clone());
+                let order_by_name: HashMap<&str, usize> = names
+                    .iter()
+                    .enumerate()
+                    .map(|(idx, name)| (name.as_str(), idx))
+                    .collect();
+                let mut reordered_slots = vec![None; names.len()];
+                let mut remaining = Vec::with_capacity(d.presets.len());
+                for preset in d.presets.drain(..) {
+                    match order_by_name.get(preset.name.as_str()) {
+                        Some(&idx) if reordered_slots[idx].is_none() => {
+                            reordered_slots[idx] = Some(preset);
+                        }
+                        _ => remaining.push(preset),
                     }
                 }
-                // Keep any presets not mentioned in the reorder list
-                for p in &d.presets {
-                    if !names.contains(&p.name) {
-                        reordered.push(p.clone());
-                    }
-                }
+                let mut reordered = Vec::with_capacity(remaining.len() + names.len());
+                reordered.extend(reordered_slots.into_iter().flatten());
+                reordered.extend(remaining);
                 d.presets = reordered;
-                d.storage.save_presets(&d.presets).ok();
-            }
-            send_state(ctx, tx).await?;
+                d.presets.clone()
+            };
+            save_presets(ctx, &presets);
             ctx.broadcast_state();
         }
 
         ClientMessage::Export => {
             let d = ctx.domain.lock().unwrap();
-            let mut data = ExportData { collars: d.collars.clone(), presets: d.presets.clone() };
+            let mut data = ExportData {
+                collars: d.collars.clone(),
+                presets: d.presets.clone(),
+            };
             drop(d);
             for preset in &mut data.presets {
                 preset.normalize();
@@ -788,15 +914,15 @@ async fn handle_text_message<W: picoserve::io::Write>(
                 send_error(tx, e.to_string()).await?;
                 return Ok(());
             }
-            {
+            let (collars, presets) = {
                 let mut d = ctx.domain.lock().unwrap();
                 stop_active_preset(&mut d, &ctx.preset_run_id);
                 d.collars = data.collars;
                 d.presets = data.presets;
-                d.storage.save_collars(&d.collars).ok();
-                d.storage.save_presets(&d.presets).ok();
-            }
-            send_state(ctx, tx).await?;
+                (d.collars.clone(), d.presets.clone())
+            };
+            save_collars(ctx, &collars);
+            save_presets(ctx, &presets);
             ctx.broadcast_state();
         }
     }
@@ -804,91 +930,109 @@ async fn handle_text_message<W: picoserve::io::Write>(
     Ok(())
 }
 
-async fn send_state<W: picoserve::io::Write>(ctx: &AppCtx, tx: &mut ws::SocketTx<W>) -> Result<(), W::Error> {
-    tx.send_text(&ctx.state_json()).await
-}
-
-async fn send_error<W: picoserve::io::Write>(tx: &mut ws::SocketTx<W>, message: impl Into<String>) -> Result<(), W::Error> {
-    let msg = serde_json::to_string(&ServerMessage::Error { message: message.into() }).unwrap();
+async fn send_error<W: picoserve::io::Write>(
+    tx: &mut ws::SocketTx<W>,
+    message: impl Into<String>,
+) -> Result<(), W::Error> {
+    let msg = serde_json::to_string(&ServerMessage::Error {
+        message: message.into(),
+    })
+    .unwrap();
     tx.send_text(&msg).await
 }
 
 // --- Preset execution (runs on std::thread, not async) ---
 
-fn run_preset(preset: &Preset, collars: &[Collar], ctx: &AppCtx, run_id: u32) {
-    let mut events: Vec<PresetEvent> = Vec::new();
-    for track in &preset.tracks {
-        let Some(collar) = collars.iter().find(|c| c.name == track.collar_name) else { continue };
-        let mut time_ms = 0u64;
-        for step in &track.steps {
-            let end_ms = time_ms + step.duration_ms as u64;
-            if let Some(mode) = step.mode.to_command_mode() {
-                scheduling::schedule_step_events(&mut events, time_ms, end_ms, collar.collar_id, collar.channel, mode.to_rf_byte(), step.intensity);
-            }
-            time_ms = end_ms;
-        }
-    }
-    events.sort_by_key(|e| e.time_ms);
-
+fn run_preset(preset_name: &str, events: Vec<PresetEvent>, ctx: &AppCtx, run_id: u32) {
     let start = Instant::now();
     for event in &events {
-        if ctx.preset_run_id.load(Ordering::SeqCst) != run_id { return; }
+        if ctx.preset_run_id.load(Ordering::SeqCst) != run_id {
+            return;
+        }
         let target = Duration::from_millis(event.time_ms);
         let elapsed = start.elapsed();
         if target > elapsed {
             let wait = target - elapsed;
             let chunks = wait.as_millis() as u64 / 50;
             for _ in 0..chunks {
-                if ctx.preset_run_id.load(Ordering::SeqCst) != run_id { return; }
+                if ctx.preset_run_id.load(Ordering::SeqCst) != run_id {
+                    return;
+                }
                 std::thread::sleep(Duration::from_millis(50));
             }
             let remainder = wait - Duration::from_millis(chunks * 50);
-            if !remainder.is_zero() { std::thread::sleep(remainder); }
+            if !remainder.is_zero() {
+                std::thread::sleep(remainder);
+            }
         }
-        if let Err(e) = rf_send_with_led(&ctx.rf, &ctx.tx_led, event.collar_id, event.channel, event.mode_byte, event.intensity) {
+        if ctx.preset_run_id.load(Ordering::SeqCst) != run_id {
+            return;
+        }
+        if let Err(e) = rf_send_with_led(
+            &ctx.rf,
+            &ctx.tx_led,
+            event.collar_id,
+            event.channel,
+            event.mode_byte,
+            event.intensity,
+        ) {
             error!("RF error during preset: {e}");
         }
     }
-    info!("Preset '{}' completed", preset.name);
+    info!("Preset '{}' completed", preset_name);
 }
 
-/// Spawn RF debug worker thread on demand (takes the receiver from AppCtx).
-/// The thread runs until `rf_debug_enabled` is set to false (last listener leaves),
-/// then returns the receiver back into AppCtx for reuse.
-fn spawn_rf_debug_worker(ctx: &AppCtx) {
-    let Some(mut receiver) = ctx.rf_receiver.lock().unwrap().take() else {
-        warn!("RF debug receiver already in use by another worker");
+/// Spawn the RF debug worker lazily on first use. The worker stays alive and
+/// idles when debug listening is disabled, which avoids races when listeners
+/// stop and restart quickly.
+fn ensure_rf_debug_worker(ctx: &AppCtx) {
+    if ctx
+        .rf_debug_worker_spawned
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
         return;
-    };
-    let ctx = ctx.clone();
+    }
+
+    let worker_ctx = ctx.clone();
     let result = std::thread::Builder::new()
         .name("rf-debug-rx".into())
         .stack_size(16384)
         .spawn(move || {
+            let Some(mut receiver) = worker_ctx.rf_receiver.lock().unwrap().take() else {
+                worker_ctx
+                    .rf_debug_worker_spawned
+                    .store(false, Ordering::SeqCst);
+                error!("RF debug receiver missing when worker started");
+                return;
+            };
             info!("RF debug worker started");
             loop {
-                if !ctx.rf_debug_enabled.load(Ordering::SeqCst) {
-                    break;
+                if !worker_ctx.rf_debug_enabled.load(Ordering::SeqCst) {
+                    std::thread::sleep(Duration::from_millis(RF_DEBUG_DISABLED_SLEEP_MS));
+                    continue;
                 }
-                match receiver.listen_until_disabled(&ctx.rf_debug_enabled) {
+                match receiver.listen_until_disabled(&worker_ctx.rf_debug_enabled) {
                     Ok(Some(event)) => {
-                        ctx.rx_led.lock().unwrap().set(true);
+                        worker_ctx.rx_led.lock().unwrap().set(true);
                         {
-                            let mut d = ctx.domain.lock().unwrap();
+                            let mut d = worker_ctx.domain.lock().unwrap();
                             d.rf_debug_events.push(event.clone());
                             if d.rf_debug_events.len() > MAX_RF_DEBUG_EVENTS {
                                 let excess = d.rf_debug_events.len() - MAX_RF_DEBUG_EVENTS;
                                 d.rf_debug_events.drain(0..excess);
                             }
                         }
-                        let json = serde_json::to_string(&ServerMessage::RfDebugEvent { event: &event }).unwrap();
-                        let _ = ctx.broadcast_tx.try_broadcast(BroadcastMsg {
+                        let json =
+                            serde_json::to_string(&ServerMessage::RfDebugEvent { event: &event })
+                                .unwrap();
+                        let _ = worker_ctx.broadcast_tx.try_broadcast(BroadcastMsg {
                             json: Arc::from(json),
                             rf_debug: true,
                         });
                         // Keep LED visible for a short time
                         std::thread::sleep(Duration::from_millis(50));
-                        ctx.rx_led.lock().unwrap().set(false);
+                        worker_ctx.rx_led.lock().unwrap().set(false);
                     }
                     Ok(None) => {}
                     Err(err) => {
@@ -897,11 +1041,9 @@ fn spawn_rf_debug_worker(ctx: &AppCtx) {
                     }
                 }
             }
-            // Return the receiver for reuse
-            *ctx.rf_receiver.lock().unwrap() = Some(receiver);
-            info!("RF debug worker stopped");
         });
     if let Err(e) = result {
+        ctx.rf_debug_worker_spawned.store(false, Ordering::SeqCst);
         error!("Failed to spawn RF debug worker: {e}");
     }
 }
@@ -909,10 +1051,8 @@ fn spawn_rf_debug_worker(ctx: &AppCtx) {
 // --- Server startup ---
 
 pub fn run_server(ctx: AppCtx) -> Result<()> {
-    let conn_id_store = ctx.last_conn_id.clone();
-    let conn_addr_store = ctx.last_conn_addr.clone();
     let max_clients = ctx.domain.lock().unwrap().device_settings.max_clients as u32;
-    let app = make_app().with_state(ctx);
+    let app_ctx = ctx;
 
     let config = picoserve::Config::new(picoserve::Timeouts {
         start_read_request: picoserve::time::Duration::from_secs(5),
@@ -946,19 +1086,21 @@ pub fn run_server(ctx: AppCtx) -> Result<()> {
                     let free_heap = free_heap();
                     info!("[#{conn_id}] Connection from {addr} ({count}/{max_clients}, heap: {free_heap}B)");
 
-                    let app_ref = &app;
                     let config_ref = &config;
                     let active_ref = active.clone();
                     active_ref.set(active_ref.get() + 1);
-                    // Set conn_id + addr for the WS handler to read (single-threaded, no race)
-                    conn_id_store.store(conn_id, Ordering::Relaxed);
-                    *conn_addr_store.lock().unwrap() = addr.ip().to_string();
+                    let conn_state = ConnectionState {
+                        app: app_ctx.clone(),
+                        conn_id,
+                        conn_addr: addr.ip().to_string(),
+                    };
 
                     ex.spawn(async move {
+                        let app = make_app().with_state(conn_state);
                         let socket = AsyncIoSocket(stream);
                         let mut http_buf = vec![0u8; HTTP_BUF_SIZE];
                         let server = picoserve::Server::custom(
-                            app_ref, AsyncIoTimer, config_ref, &mut http_buf,
+                            &app, AsyncIoTimer, config_ref, &mut http_buf,
                         );
                         match server.serve(socket).await {
                             Ok(_) => info!("[#{conn_id}] Connection from {addr} closed"),

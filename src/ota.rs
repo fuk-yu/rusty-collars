@@ -19,19 +19,30 @@ pub async fn perform_update<R: picoserve::io::Read>(
     let mut written = 0usize;
 
     loop {
-        let n = reader.read(&mut buf).await.map_err(|e| anyhow::anyhow!("read error: {e:?}"))?;
+        let n = reader
+            .read(&mut buf)
+            .await
+            .map_err(|e| anyhow::anyhow!("read error: {e:?}"))?;
         if n == 0 {
             break;
         }
-        update.write(&buf[..n]).with_context(|| format!("OTA write failed at {written}"))?;
+        update
+            .write(&buf[..n])
+            .with_context(|| format!("OTA write failed at {written}"))?;
         written += n;
 
         if written % (64 * 1024) < n {
-            info!("OTA: {written}/{content_length} bytes ({:.0}%)", written as f64 / content_length as f64 * 100.0);
+            info!(
+                "OTA: {written}/{content_length} bytes ({:.0}%)",
+                written as f64 / content_length as f64 * 100.0
+            );
         }
     }
 
-    assert!(written == content_length, "OTA: expected {content_length} bytes, got {written}");
+    assert!(
+        written == content_length,
+        "OTA: expected {content_length} bytes, got {written}"
+    );
 
     update.complete().context("OTA complete failed")?;
     info!("OTA: update complete ({written} bytes), rebooting...");

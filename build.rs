@@ -1,26 +1,25 @@
 use std::io::Write;
 
 fn main() {
-    // Generate sdkconfig fragment with absolute path to partition table CSV.
-    // (esp-idf cmake resolves CONFIG_PARTITION_TABLE_CUSTOM_FILENAME relative to its build dir)
     let project_dir = std::env::current_dir().expect("current_dir");
     let partitions_csv = project_dir.join("partitions.csv");
-    assert!(partitions_csv.exists(), "partitions.csv not found — run scripts/select-target.sh or scripts/flash.sh first");
-    std::fs::write(
-        project_dir.join("sdkconfig.defaults.partitions"),
-        format!("CONFIG_PARTITION_TABLE_CUSTOM=y\nCONFIG_PARTITION_TABLE_CUSTOM_FILENAME=\"{}\"\n", partitions_csv.display()),
-    ).expect("write sdkconfig.defaults.partitions");
+    assert!(
+        partitions_csv.exists(),
+        "partitions.csv not found — run scripts/select-target.sh or scripts/flash.sh first"
+    );
     println!("cargo:rerun-if-changed=partitions.csv");
 
     embuild::espidf::sysenv::output();
 
     // Gzip the frontend HTML at build time (saves ~29KB heap at runtime)
     let version = app_version();
-    let html = std::fs::read_to_string("frontend/index.html")
-        .expect("frontend/index.html not found");
+    let html =
+        std::fs::read_to_string("frontend/index.html").expect("frontend/index.html not found");
     let html = html.replace("__RUSTY_COLLARS_APP_VERSION__", &version);
     let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::best());
-    encoder.write_all(html.as_bytes()).expect("gzip encode failed");
+    encoder
+        .write_all(html.as_bytes())
+        .expect("gzip encode failed");
     let compressed = encoder.finish().expect("gzip finish failed");
     let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR not set");
     let gz_path = std::path::Path::new(&out_dir).join("frontend.html.gz");
@@ -32,16 +31,22 @@ fn main() {
         (1.0 - compressed.len() as f64 / html.len() as f64) * 100.0
     );
 
-    let config = std::fs::read_to_string("wifi.toml")
-        .expect("wifi.toml not found! Copy wifi.toml.example to wifi.toml and fill in credentials.");
+    let config = std::fs::read_to_string("wifi.toml").expect(
+        "wifi.toml not found! Copy wifi.toml.example to wifi.toml and fill in credentials.",
+    );
     let table: toml::Table = config.parse().expect("invalid wifi.toml");
 
     let ssid = table["ssid"].as_str().expect("wifi.toml: missing 'ssid'");
-    let password = table["password"].as_str().expect("wifi.toml: missing 'password'");
+    let password = table["password"]
+        .as_str()
+        .expect("wifi.toml: missing 'password'");
 
     println!("cargo:rustc-env=WIFI_SSID={ssid}");
     println!("cargo:rustc-env=WIFI_PASSWORD={password}");
-    println!("cargo:rustc-env=RUSTY_COLLARS_APP_VERSION={}", app_version());
+    println!(
+        "cargo:rustc-env=RUSTY_COLLARS_APP_VERSION={}",
+        app_version()
+    );
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=Cargo.toml");
     println!("cargo:rerun-if-changed=src");
@@ -51,8 +56,8 @@ fn main() {
 
 fn app_version() -> String {
     let package_version = std::env::var("CARGO_PKG_VERSION").expect("missing CARGO_PKG_VERSION");
-    let git_revision = git_output(&["rev-parse", "--short=12", "HEAD"])
-        .unwrap_or_else(|| "nogit".to_string());
+    let git_revision =
+        git_output(&["rev-parse", "--short=12", "HEAD"]).unwrap_or_else(|| "nogit".to_string());
     let dirty_suffix = if git_is_dirty() { "-dirty" } else { "" };
     let build_unix_s = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

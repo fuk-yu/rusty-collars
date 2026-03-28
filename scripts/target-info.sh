@@ -64,6 +64,10 @@ activate_target() {
   cp "$project_dir/.cargo/config-${TARGET_NAME}.toml" "$project_dir/.cargo/config.toml"
   cp "$project_dir/sdkconfig.defaults.${TARGET_NAME}" "$project_dir/sdkconfig.defaults"
   cp "$project_dir/${PARTITION_TABLE}" "$project_dir/partitions.csv"
+  cat > "$project_dir/sdkconfig.defaults.partitions" <<EOF
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="$project_dir/partitions.csv"
+EOF
 
   # espflash needs to know the partition table for OTA
   cat > "$project_dir/espflash.toml" <<EOF

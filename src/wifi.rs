@@ -17,18 +17,22 @@ const WIFI_SSID_DEFAULT: &str = env!("WIFI_SSID");
 const WIFI_PASSWORD_DEFAULT: &str = env!("WIFI_PASSWORD");
 const WIFI_RECONNECT_BASE_DELAY: Duration = Duration::from_millis(500);
 const WIFI_RECONNECT_MAX_DELAY: Duration = Duration::from_secs(5);
+const WIFI_CONNECT_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(15);
 
 pub struct WifiController {
     wifi: BlockingWifi<EspWifi<'static>>,
     sta_ssid: String,
     reconnect_delay: Duration,
     reconnect_at: Option<Instant>,
+    connect_deadline: Option<Instant>,
     connecting: bool,
 }
 
 impl WifiController {
     /// Non-blocking poll. Safe to call from the main loop with watchdog.
     pub fn poll(&mut self) {
+        let now = Instant::now();
+
         // If a background reconnect is in progress, check if it finished
         if self.connecting {
             match self.wifi.is_connected() {
@@ -37,11 +41,37 @@ impl WifiController {
                         info!("WiFi STA connected! IP: {}", ip_info.ip);
                     }
                     self.connecting = false;
+                    self.connect_deadline = None;
                     self.reconnect_delay = WIFI_RECONNECT_BASE_DELAY;
                     self.reconnect_at = None;
+                    return;
                 }
-                _ => {} // still connecting, don't block
+                Ok(false) => {}
+                Err(err) => {
+                    warn!("WiFi reconnect status check failed: {err:#}");
+                }
             }
+
+            let connect_deadline = self
+                .connect_deadline
+                .expect("missing connect deadline while reconnecting");
+            if now < connect_deadline {
+                return;
+            }
+
+            warn!(
+                "WiFi reconnect to '{}' timed out after {}ms",
+                self.sta_ssid,
+                WIFI_CONNECT_ATTEMPT_TIMEOUT.as_millis()
+            );
+            if let Err(err) = self.wifi.wifi_mut().disconnect() {
+                warn!("WiFi disconnect after timeout failed: {err:#}");
+            }
+            self.connecting = false;
+            self.connect_deadline = None;
+            let next_delay = next_reconnect_delay(self.reconnect_delay);
+            self.reconnect_delay = next_delay;
+            self.reconnect_at = Some(now + next_delay);
             return;
         }
 
@@ -68,7 +98,6 @@ impl WifiController {
             );
         }
 
-        let now = Instant::now();
         let Some(reconnect_at) = self.reconnect_at else {
             self.reconnect_at = Some(now + self.reconnect_delay);
             return;
@@ -86,9 +115,10 @@ impl WifiController {
 
         // Non-blocking connect: just initiate, don't wait for completion.
         // The next poll() will check is_connected().
-        match self.wifi.connect() {
+        match self.wifi.wifi_mut().connect() {
             Ok(()) => {
                 self.connecting = true;
+                self.connect_deadline = Some(now + WIFI_CONNECT_ATTEMPT_TIMEOUT);
                 self.reconnect_at = None;
             }
             Err(err) => {
@@ -112,10 +142,7 @@ pub fn connect(
     nvs: EspDefaultNvsPartition,
     settings: &DeviceSettings,
 ) -> Result<WifiController> {
-    let mut wifi = BlockingWifi::wrap(
-        EspWifi::new(modem, sys_loop.clone(), Some(nvs))?,
-        sys_loop,
-    )?;
+    let mut wifi = BlockingWifi::wrap(EspWifi::new(modem, sys_loop.clone(), Some(nvs))?, sys_loop)?;
 
     // Resolve STA credentials: NVS settings override compile-time defaults
     let sta_ssid = if settings.wifi_ssid.is_empty() {
@@ -160,10 +187,7 @@ pub fn connect(
             max_connections: 4,
             ..Default::default()
         };
-        info!(
-            "WiFi Mixed mode: STA='{}' + AP='{}'",
-            sta_ssid, AP_SSID
-        );
+        info!("WiFi Mixed mode: STA='{}' + AP='{}'", sta_ssid, AP_SSID);
         Configuration::Mixed(sta_config, ap_config)
     } else {
         info!("WiFi STA mode: '{}'", sta_ssid);
@@ -197,6 +221,7 @@ pub fn connect(
         sta_ssid,
         reconnect_delay: WIFI_RECONNECT_BASE_DELAY,
         reconnect_at: None,
+        connect_deadline: None,
         connecting: false,
     })
 }

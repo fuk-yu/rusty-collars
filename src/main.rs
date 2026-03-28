@@ -25,8 +25,11 @@ pub use rusty_collars_core::{protocol, scheduling, validation};
 fn log_heap(label: &str) {
     let free = unsafe { esp_idf_svc::sys::esp_get_free_heap_size() };
     let min = unsafe { esp_idf_svc::sys::esp_get_minimum_free_heap_size() };
-    info!("[heap] {label}: free={free}B ({:.1}KB), min_ever={min}B ({:.1}KB)",
-        free as f64 / 1024.0, min as f64 / 1024.0);
+    info!(
+        "[heap] {label}: free={free}B ({:.1}KB), min_ever={min}B ({:.1}KB)",
+        free as f64 / 1024.0,
+        min as f64 / 1024.0
+    );
 }
 
 fn main() -> Result<()> {
@@ -44,7 +47,11 @@ fn main() -> Result<()> {
     unsafe {
         let config = esp_idf_svc::sys::esp_vfs_eventfd_config_t { max_fds: 5 };
         let err = esp_idf_svc::sys::esp_vfs_eventfd_register(&config);
-        assert_eq!(err, esp_idf_svc::sys::ESP_OK, "esp_vfs_eventfd_register failed: {err}");
+        assert_eq!(
+            err,
+            esp_idf_svc::sys::ESP_OK,
+            "esp_vfs_eventfd_register failed: {err}"
+        );
     }
 
     // Load GPIO settings from NVS (before consuming peripherals)
@@ -53,8 +60,10 @@ fn main() -> Result<()> {
     drop(temp_storage);
     info!(
         "GPIO settings: TX LED={}, RX LED={}, RF TX={}, RF RX={}",
-        device_settings.tx_led_pin, device_settings.rx_led_pin,
-        device_settings.rf_tx_pin, device_settings.rf_rx_pin
+        device_settings.tx_led_pin,
+        device_settings.rx_led_pin,
+        device_settings.rf_tx_pin,
+        device_settings.rf_rx_pin
     );
 
     // Create pins from settings (unsafe: we trust the stored pin numbers)
@@ -71,11 +80,22 @@ fn main() -> Result<()> {
 
     // Network: WiFi on ESP32/C6, Ethernet on P4, OpenETH on QEMU
     #[cfg(esp32)]
-    let mut network = net::connect(_peripherals.modem, _peripherals.mac, sys_loop.clone(), nvs_partition.clone(), &device_settings)?;
+    let mut network = net::connect(
+        _peripherals.modem,
+        _peripherals.mac,
+        sys_loop.clone(),
+        nvs_partition.clone(),
+        &device_settings,
+    )?;
     #[cfg(esp32p4)]
     let mut network = net::connect(sys_loop.clone(), nvs_partition.clone(), &device_settings)?;
     #[cfg(not(any(esp32, esp32p4)))]
-    let mut network = net::connect(_peripherals.modem, sys_loop.clone(), nvs_partition.clone(), &device_settings)?;
+    let mut network = net::connect(
+        _peripherals.modem,
+        sys_loop.clone(),
+        nvs_partition.clone(),
+        &device_settings,
+    )?;
     log_heap("after network");
 
     let tx_led = Arc::new(Mutex::new(led::Led::new(tx_led_pin)?));
@@ -87,7 +107,11 @@ fn main() -> Result<()> {
     // Load saved state
     let collars = storage.load_collars()?;
     let presets = storage.load_presets()?;
-    info!("Loaded {} collars and {} presets", collars.len(), presets.len());
+    info!(
+        "Loaded {} collars and {} presets",
+        collars.len(),
+        presets.len()
+    );
 
     // Broadcast channel for server-push (background threads → WS clients)
     let (mut broadcast_tx, _initial_rx) = async_broadcast::broadcast(16);
