@@ -996,7 +996,7 @@ fn run_preset(preset_name: &str, events: Vec<PresetEvent>, ctx: &AppCtx, run_id:
         if ctx.preset_run_id.load(Ordering::SeqCst) != run_id {
             return;
         }
-        let target = Duration::from_millis(event.time_ms);
+        let target = Duration::from_micros(event.time_us);
         let elapsed = start.elapsed();
         if target > elapsed {
             let wait = target - elapsed;

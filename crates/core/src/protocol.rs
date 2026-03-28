@@ -301,17 +301,17 @@ pub struct ExportData {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct PresetPreview {
-    pub total_duration_ms: u64,
+    pub total_duration_us: u64,
     pub events: Vec<PresetPreviewEvent>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct PresetPreviewEvent {
-    pub requested_time_ms: u64,
-    pub actual_time_ms: u64,
+    pub requested_time_us: u64,
+    pub actual_time_us: u64,
     pub track_index: usize,
     pub step_index: usize,
-    pub transmit_duration_ms: u64,
+    pub transmit_duration_us: u64,
     pub collar_name: String,
     pub collar_id: u16,
     pub channel: u8,

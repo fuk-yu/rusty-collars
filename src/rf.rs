@@ -2,6 +2,10 @@ use anyhow::Result;
 use esp_idf_svc::hal::delay::Ets;
 use esp_idf_svc::hal::gpio::{Input, InputPin, Output, OutputPin, PinDriver, Pull};
 use log::debug;
+use rusty_collars_core::rf_timing::{
+    BIT_ONE_HIGH_US, BIT_ONE_LOW_US, BIT_ZERO_HIGH_US, BIT_ZERO_LOW_US, FRAME_BITS, FRAME_BYTES,
+    PREAMBLE_HIGH_US, PREAMBLE_LOW_US, REPEAT_COUNT,
+};
 
 use crate::protocol::{self, CommandMode, RfDebugFrame};
 
@@ -13,15 +17,6 @@ use crate::protocol::{self, CommandMode, RfDebugFrame};
 /// Bit 0:    HIGH 250us,  LOW 750us
 /// Payload:  [id_hi:8][id_lo:8][channel:4|mode:4][intensity:8][checksum:8]
 /// Tail:     2x bit-0
-const REPEAT_COUNT: u32 = 3;
-const FRAME_BYTES: usize = 5;
-const FRAME_BITS: usize = FRAME_BYTES * 8 + 2;
-const PREAMBLE_HIGH_US: u32 = 1400;
-const PREAMBLE_LOW_US: u32 = 750;
-const BIT_ONE_HIGH_US: u32 = 750;
-const BIT_ONE_LOW_US: u32 = 250;
-const BIT_ZERO_HIGH_US: u32 = 250;
-const BIT_ZERO_LOW_US: u32 = 750;
 const PREAMBLE_HIGH_TOLERANCE_US: u32 = 350;
 const PREAMBLE_LOW_TOLERANCE_US: u32 = 180;
 const BIT_TOLERANCE_US: u32 = 180;

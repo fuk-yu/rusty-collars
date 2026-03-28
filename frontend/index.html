@@ -91,6 +91,9 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 .preset-preview .status { font-size: 0.85em; color: var(--text2); margin-top: 8px; }
 .preset-preview .status.error { color: var(--warn); }
 .preset-preview .summary { font-size: 0.8em; color: var(--text2); margin-top: 8px; }
+.preset-preview-legend { margin-top: 10px; font-size: 0.75em; line-height: 1.4; color: var(--text2); padding: 8px 10px; border-radius: 6px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.06); }
+.preset-preview-legend-row + .preset-preview-legend-row { margin-top: 4px; }
+.preset-preview-legend strong { color: var(--text); font-weight: 600; }
 .preset-preview-timeline { margin-top: 10px; }
 .preset-preview-timeline-scale { display: flex; justify-content: space-between; gap: 8px; margin-bottom: 4px; font-size: 0.72em; color: var(--text2); }
 .preset-preview-timeline-bar { position: relative; height: 28px; border-radius: 6px; overflow: hidden; background: linear-gradient(180deg, rgba(255,255,255,0.05), rgba(255,255,255,0.02)); border: 1px solid rgba(255,255,255,0.1); }
@@ -318,14 +321,20 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
       <input id="editor-name" placeholder="Preset name" oninput="handleEditorNameInput(this.value)">
     </div>
     <div id="editor-tracks"></div>
+    <button onclick="editorAddTrack()" style="margin-top:8px">+ Add Track</button>
     <details class="preset-preview" id="editor-preview-panel">
       <summary>Preview</summary>
       <div class="status" id="editor-preview-status">Preview unavailable until the editor is initialized.</div>
       <div class="summary" id="editor-preview-summary"></div>
       <div class="preset-preview-timeline" id="editor-preview-timeline"></div>
       <div class="preset-preview-table-wrap" id="editor-preview-events"></div>
+      <div class="preset-preview-legend" id="editor-preview-legend">
+        <div class="preset-preview-legend-row"><strong>At</strong>: actual RF transmit start after single-transmitter serialization.</div>
+        <div class="preset-preview-legend-row"><strong>🎯 Requested</strong>: ideal transmit start before any collision shifting.</div>
+        <div class="preset-preview-legend-row"><strong>Delay</strong>: serialization slip, equal to <span class="mono">At - Requested</span>.</div>
+        <div class="preset-preview-legend-row"><strong>⏱️ TX</strong>: on-air transmit duration of one RF message, derived from the encoder waveform.</div>
+      </div>
     </details>
-    <button onclick="editorAddTrack()" style="margin-top:8px">+ Add Track</button>
     <div class="editor-actions">
       <button onclick="closeEditor()">Cancel</button>
       <button class="btn-add" onclick="savePreset()">Save</button>
@@ -955,14 +964,25 @@ function handlePresetPreview(msg) {
   renderEditorPreview();
 }
 
-function formatPreviewTimeMs(timeMs) {
-  if (timeMs % 1000 === 0) {
-    return (timeMs / 1000) + 's';
+function formatPreviewTimeUs(timeUs) {
+  const roundedTimeMs = Math.round(timeUs / 1000);
+  if (roundedTimeMs === 0) {
+    return '0ms';
   }
-  if (timeMs >= 1000) {
-    return (timeMs / 1000).toFixed(3) + 's';
+  if (roundedTimeMs % 1000 === 0) {
+    return (roundedTimeMs / 1000) + 's';
   }
-  return timeMs + 'ms';
+  if (roundedTimeMs >= 1000) {
+    return (roundedTimeMs / 1000).toFixed(3) + 's';
+  }
+  return roundedTimeMs + 'ms';
+}
+
+function computePreviewTimelineEndUs(preview) {
+  return Math.max(
+    preview.total_duration_us,
+    ...preview.events.map(event => event.actual_time_us + event.transmit_duration_us),
+  );
 }
 
 function previewTrackColor(trackIndex) {
@@ -990,8 +1010,8 @@ function bindPreviewEventHighlights(container) {
 }
 
 function buildPreviewSegmentTitle(event) {
-  const delayMs = event.actual_time_ms - event.requested_time_ms;
-  return `Track ${event.track_index + 1}, step ${event.step_index + 1}, ${event.collar_name}, ${describeMode(event.mode)}, level ${event.intensity}, requested ${formatPreviewTimeMs(event.requested_time_ms)}, actual ${formatPreviewTimeMs(event.actual_time_ms)}, delay ${delayMs}ms, TX ${event.transmit_duration_ms}ms`;
+  const delayUs = event.actual_time_us - event.requested_time_us;
+  return `Track ${event.track_index + 1}, step ${event.step_index + 1}, ${event.collar_name}, ${describeMode(event.mode)}, level ${event.intensity}, requested ${formatPreviewTimeUs(event.requested_time_us)}, actual ${formatPreviewTimeUs(event.actual_time_us)}, delay ${formatPreviewTimeUs(delayUs)}, TX ${formatPreviewTimeUs(event.transmit_duration_us)}`;
 }
 
 function renderPreviewTimeline(preview) {
@@ -1002,21 +1022,18 @@ function renderPreviewTimeline(preview) {
     return;
   }
 
-  const timelineEndMs = Math.max(
-    preview.total_duration_ms,
-    ...preview.events.map(event => event.actual_time_ms + event.transmit_duration_ms),
-  );
+  const timelineEndUs = computePreviewTimelineEndUs(preview);
 
   timelineEl.innerHTML = `
     <div class="preset-preview-timeline-scale">
       <span class="mono">0ms</span>
-      <span class="mono">${formatPreviewTimeMs(timelineEndMs)}</span>
+      <span class="mono">${formatPreviewTimeUs(timelineEndUs)}</span>
     </div>
     <div class="preset-preview-timeline-bar">
       ${preview.events.map((event, index) => {
         const previewId = `preview-${index}`;
-        const leftPct = timelineEndMs === 0 ? 0 : (event.actual_time_ms / timelineEndMs) * 100;
-        const widthPct = timelineEndMs === 0 ? 100 : Math.max((event.transmit_duration_ms / timelineEndMs) * 100, 0.35);
+        const leftPct = timelineEndUs === 0 ? 0 : (event.actual_time_us / timelineEndUs) * 100;
+        const widthPct = timelineEndUs === 0 ? 100 : Math.max((event.transmit_duration_us / timelineEndUs) * 100, 0.35);
         return `
           <button
             type="button"
@@ -1058,10 +1075,11 @@ function renderEditorPreview() {
     statusEl.textContent = 'No preview data available yet.';
   } else {
     const preview = editorPreview.data;
-    const delayedEvents = preview.events.filter(event => event.actual_time_ms !== event.requested_time_ms).length;
-    statusEl.textContent = 'Preview reflects the exact serialized RF transmit order.';
+    const timelineEndUs = computePreviewTimelineEndUs(preview);
+    const delayedEvents = preview.events.filter(event => event.actual_time_us !== event.requested_time_us).length;
+    statusEl.textContent = 'Preview reflects the exact serialized RF transmit order and encoder-derived timing.';
     summaryEl.textContent =
-      `${preview.events.length} RF messages over ${formatPreviewTimeMs(preview.total_duration_ms)}. ` +
+      `${preview.events.length} RF messages. Requested preset span ${formatPreviewTimeUs(preview.total_duration_us)}; serialized RF timeline ${formatPreviewTimeUs(timelineEndUs)}. ` +
       `${delayedEvents} delayed by single-transmitter serialization.`;
     renderPreviewTimeline(preview);
     eventsEl.innerHTML = `
@@ -1075,7 +1093,7 @@ function renderEditorPreview() {
             <th title="Step">👣</th>
             <th title="RF TX Duration">⏱️</th>
             <th>Collar</th>
-            <th>Mode</th>
+            <th title="Mode">🎛️</th>
             <th title="Level">📶</th>
             <th>Frame</th>
           </tr>
@@ -1083,14 +1101,14 @@ function renderEditorPreview() {
         <tbody>
           ${preview.events.map((event, index) => `
             <tr class="preset-preview-row" data-preview-id="preview-${index}" title="${esc(buildPreviewSegmentTitle(event))}">
-              <td class="mono">${formatPreviewTimeMs(event.actual_time_ms)}</td>
-              <td class="mono">${formatPreviewTimeMs(event.requested_time_ms)}</td>
-              <td class="mono">${event.actual_time_ms - event.requested_time_ms}ms</td>
+              <td class="mono">${formatPreviewTimeUs(event.actual_time_us)}</td>
+              <td class="mono">${formatPreviewTimeUs(event.requested_time_us)}</td>
+              <td class="mono">${formatPreviewTimeUs(event.actual_time_us - event.requested_time_us)}</td>
               <td style="color:${previewTrackColor(event.track_index)}">${event.track_index + 1}</td>
               <td>${event.step_index + 1}</td>
-              <td class="mono">${event.transmit_duration_ms}ms</td>
+              <td class="mono">${formatPreviewTimeUs(event.transmit_duration_us)}</td>
               <td>${esc(event.collar_name)} <span style="color:var(--text2)">CH${event.channel + 1}</span></td>
-              <td>${esc(describeMode(event.mode))}</td>
+              <td title="${esc(describeMode(event.mode))}">${MODE_EMOJI[event.mode] || esc(describeMode(event.mode))}</td>
               <td>${event.intensity}</td>
               <td class="mono frame-hex">${event.raw_hex}</td>
             </tr>
@@ -1151,7 +1169,7 @@ function openPresetEditor(name) {
     editorOriginalName = null;
     document.getElementById('editor-title').textContent = 'New Preset';
   }
-  editorOpenTrack = editorData.tracks.length > 0 ? 0 : -1;
+  editorOpenTrack = -1;
   resetEditorPreview();
   normalizeEditorPresetDurations(editorData);
   document.getElementById('editor-name').value = editorData.name;
