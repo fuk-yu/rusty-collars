@@ -20,12 +20,12 @@ run_in_env bash -lc '
 
   if cargo +esp --version >/dev/null 2>&1; then
     echo "Repo-local ESP toolchain already installed."
-    "$PROJECT_ROOT/scripts/prepare-toolchain-env.sh"
+    . "$PROJECT_ROOT/scripts/prepare-toolchain-env.sh"
     exit 0
   fi
 
   espup install --std --targets esp32,esp32c6,esp32p4 --name esp --export-file "$ESPUP_EXPORT_FILE"
   . "$ESPUP_EXPORT_FILE"
-  "$PROJECT_ROOT/scripts/prepare-toolchain-env.sh"
+  . "$PROJECT_ROOT/scripts/prepare-toolchain-env.sh"
   cargo +esp --version
 '

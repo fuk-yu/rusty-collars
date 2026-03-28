@@ -101,6 +101,37 @@ _ensure_idf_version() {
   done
 }
 
+find_idf_python() {
+  local project_dir="${1:?find_idf_python requires project dir}"
+
+  if [ -n "${IDF_PYTHON_ENV_PATH:-}" ] && [ -x "${IDF_PYTHON_ENV_PATH}/bin/python" ]; then
+    printf '%s\n' "${IDF_PYTHON_ENV_PATH}/bin/python"
+    return 0
+  fi
+
+  local python_bin
+  while IFS= read -r python_bin; do
+    printf '%s\n' "$python_bin"
+    return 0
+  done < <(find "$project_dir/.embuild/espressif/python_env" -type f -path '*/bin/python' | sort)
+
+  echo "Missing ESP-IDF python under $project_dir/.embuild/espressif/python_env" >&2
+  return 1
+}
+
+find_esptool_py() {
+  local project_dir="${1:?find_esptool_py requires project dir}"
+  local esptool
+
+  while IFS= read -r esptool; do
+    printf '%s\n' "$esptool"
+    return 0
+  done < <(find "$project_dir/.embuild/espressif/python_env" -type f -path '*/bin/esptool.py' | sort)
+
+  echo "Missing esptool.py under $project_dir/.embuild/espressif/python_env" >&2
+  return 1
+}
+
 # Parses --target <name> and optional flags from arguments. Dies if --target is missing.
 # Remaining args are placed in REMAINING_ARGS.
 # Sets: TARGET_NAME, TARGET_TRIPLE, TARGET_BINARY, TARGET_CHIP, OPT_CLEAN

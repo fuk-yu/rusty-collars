@@ -2,6 +2,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 project_dir="$PWD"
+. "$project_dir/scripts/prepare-toolchain-env.sh"
 
 source "$project_dir/scripts/target-info.sh"
 parse_target_arg "$@"
@@ -29,9 +30,10 @@ bootloader_bin="$idf_build_dir/bootloader/bootloader.bin"
 if [[ -n "$ESPFLASH_FLASH_ARGS" ]]; then
   # Targets where espflash's ELF conversion is broken (e.g. P4 rev <3.0):
   # use esptool.py for ELF→bin, espflash write-bin for fast transfer
-  esptool=$(find "$project_dir/.embuild/espressif/python_env" -name 'esptool.py' -path '*/bin/*' | head -1)
+  idf_python="$(find_idf_python "$project_dir")"
+  esptool="$(find_esptool_py "$project_dir")"
   app_bin="$project_dir/target/$TARGET_TRIPLE/release/rusty-collars.bin"
-  run_in_env "$esptool" --chip "$TARGET_CHIP" elf2image --output "$app_bin" "$project_dir/$TARGET_BINARY"
+  run_in_env "$idf_python" "$esptool" --chip "$TARGET_CHIP" elf2image --output "$app_bin" "$project_dir/$TARGET_BINARY"
 
   if [[ "$OPT_BOOTLOADER" == true ]]; then
     run_in_env espflash write-bin $ESPFLASH_FLASH_ARGS "$BOOTLOADER_OFFSET" "$bootloader_bin"

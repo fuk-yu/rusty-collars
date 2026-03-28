@@ -47,8 +47,7 @@
           # Repo-local espup export file adds the Xtensa Rust toolchain and esp-clang.
           [ -f "$ESPUP_EXPORT_FILE" ] && . "$ESPUP_EXPORT_FILE"
 
-          "$PROJECT_ROOT/scripts/prepare-toolchain-env.sh"
-          export PATH="$TOOLCHAIN_ALIAS_DIR:$PATH"
+          . "$PROJECT_ROOT/scripts/prepare-toolchain-env.sh"
 
           if ! cargo +esp --version >/dev/null 2>&1; then
             echo ""
@@ -58,26 +57,7 @@
             echo ""
           fi
 
-          # Point to the ESP-IDF clone managed by previous builds
-          for _idf in "$PWD"/.embuild/espressif/esp-idf/v5.*; do
-            [ -d "$_idf" ] || continue
-            export IDF_PATH="$_idf"
-            export PATH="$IDF_PATH/tools:$PATH"
-            export IDF_TOOLS_PATH="$PWD/.embuild/espressif"
-            # Python env
-            for _pyenv in "$PWD"/.embuild/espressif/python_env/idf5.*; do
-              [ -d "$_pyenv" ] && export PATH="$_pyenv/bin:$PATH" && export IDF_PYTHON_ENV_PATH="$_pyenv"
-            done
-            # Cross-compilers (use newest available version)
-            for _dir in "$PWD"/.embuild/espressif/tools/xtensa-esp-elf/*/xtensa-esp-elf/bin; do
-              [ -d "$_dir" ] && export PATH="$_dir:$PATH"
-            done
-            for _dir in "$PWD"/.embuild/espressif/tools/riscv32-esp-elf/*/riscv32-esp-elf/bin; do
-              [ -d "$_dir" ] && export PATH="$_dir:$PATH"
-            done
-            break
-          done
         '';
       };
     };
-}
+  }

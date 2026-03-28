@@ -2,6 +2,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 project_dir="$PWD"
+. "$project_dir/scripts/prepare-toolchain-env.sh"
 
 source "$project_dir/scripts/target-info.sh"
 parse_target_arg "$@"
@@ -27,8 +28,9 @@ fi
 run_in_env cargo +esp build --release
 
 # Convert ELF to flashable binary (use esptool.py — espflash's conversion is broken for P4)
-esptool=$(find "$project_dir/.embuild/espressif/python_env" -name 'esptool.py' -path '*/bin/*' | head -1)
-run_in_env "$esptool" --chip "$TARGET_CHIP" elf2image --output "$FW_BIN" "$project_dir/$TARGET_BINARY"
+idf_python="$(find_idf_python "$project_dir")"
+esptool="$(find_esptool_py "$project_dir")"
+run_in_env "$idf_python" "$esptool" --chip "$TARGET_CHIP" elf2image --output "$FW_BIN" "$project_dir/$TARGET_BINARY"
 
 SIZE=$(stat -c%s "$FW_BIN")
 echo "Uploading $FW_BIN ($(numfmt --to=iec "$SIZE")) to $HOST..."
