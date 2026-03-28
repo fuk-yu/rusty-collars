@@ -302,7 +302,7 @@ mod tests {
         let collars = vec![collar("Rex", 0x1234, 0)];
         let p = preset(
             "test",
-            vec![track("Rex", vec![step(PresetStepMode::Shock, 50, 129)])],
+            vec![track("Rex", vec![step(PresetStepMode::Shock, 50, 88)])],
         );
         assert!(validate_preset(&p, &collars).is_err());
     }
@@ -351,7 +351,7 @@ mod tests {
     }
 
     #[test]
-    fn preset_overlapping_tracks_rejected() {
+    fn preset_overlapping_tracks_ok() {
         let collars = vec![collar("Rex", 0x1234, 0), collar("Max", 0xABCD, 1)];
         let p = preset(
             "test",
@@ -360,7 +360,7 @@ mod tests {
                 track("Max", vec![step(PresetStepMode::Vibrate, 50, 500)]),
             ],
         );
-        assert!(validate_preset(&p, &collars).is_err());
+        assert!(validate_preset(&p, &collars).is_ok());
     }
 
     // --- validate_presets ---

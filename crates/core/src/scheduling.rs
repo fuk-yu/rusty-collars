@@ -6,8 +6,15 @@ use crate::protocol::{Collar, Preset};
 /// Each RF command occupies the transmitter for roughly 130ms (3x43ms).
 pub const RF_COMMAND_TRANSMIT_DURATION_MS: u64 = 130;
 
+/// A single send emits three repeated RF frames over roughly 89ms from the
+/// first frame start to the last frame start.
+pub const RF_COMMAND_REPEAT_SPAN_MS: u64 = 89;
+
 /// Maximum gap between command starts for sustained collar activation.
 pub const RETRANSMIT_INTERVAL_MS: u64 = 200;
+
+/// A command keeps the collar refreshed until the last repeated frame ages out.
+pub const RF_COMMAND_COVERAGE_MS: u64 = RF_COMMAND_REPEAT_SPAN_MS + RETRANSMIT_INTERVAL_MS;
 
 /// A single scheduled RF transmission event.
 #[derive(Debug, Clone)]
@@ -22,8 +29,9 @@ pub struct PresetEvent {
 /// Schedule RF retransmission events for a single preset step.
 ///
 /// Transmits at step start, then schedules later retransmits as late as possible
-/// while keeping no more than RETRANSMIT_INTERVAL_MS between command starts and
-/// ensuring every transmission completes at or before step end.
+/// while keeping the command refreshed through the whole step. A command may
+/// occupy the transmitter past step end, but all repeated frame starts remain
+/// within the step.
 pub fn schedule_step_events(
     events: &mut Vec<PresetEvent>,
     start_ms: u64,
@@ -38,14 +46,15 @@ pub fn schedule_step_events(
     }
 
     let step_duration_ms = end_ms - start_ms;
-    if step_duration_ms < RF_COMMAND_TRANSMIT_DURATION_MS {
+    if step_duration_ms < RF_COMMAND_REPEAT_SPAN_MS {
         return Err(anyhow!(
-            "step duration {}ms is shorter than RF transmit time {}ms",
+            "step duration {}ms is shorter than RF repeat span {}ms",
             step_duration_ms,
-            RF_COMMAND_TRANSMIT_DURATION_MS
+            RF_COMMAND_REPEAT_SPAN_MS
         ));
     }
 
+    let latest_start_ms = end_ms - RF_COMMAND_REPEAT_SPAN_MS;
     let mut t = start_ms;
     loop {
         events.push(PresetEvent {
@@ -56,13 +65,12 @@ pub fn schedule_step_events(
             intensity,
         });
 
-        if end_ms - t <= RETRANSMIT_INTERVAL_MS {
+        if t + RF_COMMAND_COVERAGE_MS >= end_ms {
             return Ok(());
         }
 
         let next_earliest = t + RF_COMMAND_TRANSMIT_DURATION_MS;
-        let next_latest =
-            (t + RETRANSMIT_INTERVAL_MS).min(end_ms - RF_COMMAND_TRANSMIT_DURATION_MS);
+        let next_latest = (t + RF_COMMAND_COVERAGE_MS).min(latest_start_ms);
         if next_earliest > next_latest {
             return Err(anyhow!(
                 "step cannot be sustained without overlapping transmissions"
@@ -128,29 +136,20 @@ pub fn schedule_preset_events(preset: &Preset, collars: &[Collar]) -> Result<Vec
         }
     }
 
-    events.sort_by_key(|scheduled| scheduled.event.time_ms);
+    events.sort_by(|left, right| {
+        left.event
+            .time_ms
+            .cmp(&right.event.time_ms)
+            .then(left.track_index.cmp(&right.track_index))
+            .then(left.step_index.cmp(&right.step_index))
+    });
 
-    let mut previous_end_ms = None;
-    let mut previous_track_index = 0usize;
-    let mut previous_step_index = 0usize;
-    for scheduled in &events {
-        if let Some(previous_end_ms) = previous_end_ms {
-            if scheduled.event.time_ms < previous_end_ms {
-                return Err(anyhow!(
-                    "Preset '{}' cannot overlap RF transmissions on a single transmitter: track {} step {} starts at {}ms before track {} step {} ends at {}ms",
-                    preset.name,
-                    scheduled.track_index,
-                    scheduled.step_index,
-                    scheduled.event.time_ms,
-                    previous_track_index,
-                    previous_step_index,
-                    previous_end_ms
-                ));
-            }
+    let mut transmitter_free_at_ms = 0u64;
+    for scheduled in &mut events {
+        if scheduled.event.time_ms < transmitter_free_at_ms {
+            scheduled.event.time_ms = transmitter_free_at_ms;
         }
-        previous_end_ms = Some(scheduled.event.time_ms + RF_COMMAND_TRANSMIT_DURATION_MS);
-        previous_track_index = scheduled.track_index;
-        previous_step_index = scheduled.step_index;
+        transmitter_free_at_ms = scheduled.event.time_ms + RF_COMMAND_TRANSMIT_DURATION_MS;
     }
 
     Ok(events
@@ -170,8 +169,8 @@ mod tests {
     #[test]
     fn very_short_step_single_event() {
         let mut events = Vec::new();
-        let err = schedule_step_events(&mut events, 0, 100, 0x1234, 0, 2, 50).unwrap_err();
-        assert!(err.to_string().contains("shorter than RF transmit time"));
+        let err = schedule_step_events(&mut events, 0, 88, 0x1234, 0, 2, 50).unwrap_err();
+        assert!(err.to_string().contains("shorter than RF repeat span"));
         assert!(events.is_empty());
     }
 
@@ -183,33 +182,31 @@ mod tests {
     }
 
     #[test]
-    fn step_201ms_unschedulable() {
+    fn step_201ms_single_event() {
         let mut events = Vec::new();
-        let err = schedule_step_events(&mut events, 0, 201, 0x1234, 0, 2, 50).unwrap_err();
-        assert!(err
-            .to_string()
-            .contains("cannot be sustained without overlapping transmissions"));
+        schedule_step_events(&mut events, 0, 201, 0x1234, 0, 2, 50).unwrap();
+        assert_eq!(times(&events), vec![0]);
     }
 
     #[test]
     fn step_329ms_two_events() {
         let mut events = Vec::new();
         schedule_step_events(&mut events, 0, 329, 0x1234, 0, 2, 50).unwrap();
-        assert_eq!(times(&events), vec![0, 199]);
+        assert_eq!(times(&events), vec![0, 240]);
     }
 
     #[test]
-    fn step_500ms_three_events() {
+    fn step_500ms_two_events() {
         let mut events = Vec::new();
         schedule_step_events(&mut events, 0, 500, 0x1234, 0, 2, 50).unwrap();
-        assert_eq!(times(&events), vec![0, 200, 370]);
+        assert_eq!(times(&events), vec![0, 289]);
     }
 
     #[test]
     fn one_second_step() {
         let mut events = Vec::new();
         schedule_step_events(&mut events, 0, 1000, 0x1234, 0, 2, 50).unwrap();
-        assert_eq!(times(&events), vec![0, 200, 400, 600, 800]);
+        assert_eq!(times(&events), vec![0, 289, 578, 867]);
     }
 
     #[test]
@@ -217,16 +214,16 @@ mod tests {
         let mut events = Vec::new();
         schedule_step_events(&mut events, 0, 2000, 0x1234, 0, 2, 50).unwrap();
         let t = times(&events);
-        assert_eq!(t.len(), 10);
+        assert_eq!(t.len(), 7);
         assert_eq!(t[0], 0);
-        assert_eq!(t[9], 1800);
+        assert_eq!(t[6], 1734);
     }
 
     #[test]
     fn step_with_offset_start() {
         let mut events = Vec::new();
         schedule_step_events(&mut events, 500, 1500, 0x1234, 0, 1, 30).unwrap();
-        assert_eq!(times(&events), vec![500, 700, 900, 1100, 1300]);
+        assert_eq!(times(&events), vec![500, 789, 1078, 1367]);
     }
 
     #[test]
@@ -259,11 +256,11 @@ mod tests {
     fn no_event_past_end() {
         let mut events = Vec::new();
         schedule_step_events(&mut events, 0, 400, 0x1234, 0, 2, 50).unwrap();
-        assert_eq!(times(&events), vec![0, 200]);
+        assert_eq!(times(&events), vec![0, 289]);
     }
 
     #[test]
-    fn preset_schedule_rejects_overlapping_tracks() {
+    fn preset_schedule_serializes_overlapping_tracks() {
         let collars = vec![
             Collar {
                 name: "Rex".to_string(),
@@ -298,7 +295,7 @@ mod tests {
             ],
         };
 
-        let err = schedule_preset_events(&preset, &collars).unwrap_err();
-        assert!(err.to_string().contains("cannot overlap RF transmissions"));
+        let events = schedule_preset_events(&preset, &collars).unwrap();
+        assert_eq!(times(&events), vec![0, 130, 289, 419]);
     }
 }
