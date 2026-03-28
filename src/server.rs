@@ -180,16 +180,20 @@ fn rf_send_with_led(
     result.map_err(Into::into)
 }
 
-fn save_collars(ctx: &AppCtx, collars: &[Collar]) {
-    if let Err(err) = ctx.storage.lock().unwrap().save_collars(collars) {
-        error!("NVS save_collars failed: {err:#}");
-    }
+fn save_collars(ctx: &AppCtx, collars: &[Collar]) -> Result<()> {
+    ctx.storage
+        .lock()
+        .unwrap()
+        .save_collars(collars)
+        .map_err(Into::into)
 }
 
-fn save_presets(ctx: &AppCtx, presets: &[Preset]) {
-    if let Err(err) = ctx.storage.lock().unwrap().save_presets(presets) {
-        error!("NVS save_presets failed: {err:#}");
-    }
+fn save_presets(ctx: &AppCtx, presets: &[Preset]) -> Result<()> {
+    ctx.storage
+        .lock()
+        .unwrap()
+        .save_presets(presets)
+        .map_err(Into::into)
 }
 
 fn save_settings(ctx: &AppCtx, settings: &DeviceSettings) -> Result<()> {
@@ -198,6 +202,12 @@ fn save_settings(ctx: &AppCtx, settings: &DeviceSettings) -> Result<()> {
         .unwrap()
         .save_settings(settings)
         .map_err(Into::into)
+}
+
+fn log_storage_result(operation: &str, result: Result<()>) {
+    if let Err(err) = result {
+        error!("NVS {operation} failed: {err:#}");
+    }
 }
 
 // --- picoserve app ---
@@ -564,7 +574,7 @@ async fn handle_text_message<W: picoserve::io::Write>(
                 d.collars.push(collar);
                 d.collars.clone()
             };
-            save_collars(ctx, &collars);
+            log_storage_result("save_collars", save_collars(ctx, &collars));
             ctx.broadcast_state();
         }
 
@@ -613,8 +623,8 @@ async fn handle_text_message<W: picoserve::io::Write>(
                 stop_active_preset(&mut d, &ctx.preset_run_id);
                 (d.collars.clone(), d.presets.clone())
             };
-            save_collars(ctx, &collars);
-            save_presets(ctx, &presets);
+            log_storage_result("save_collars", save_collars(ctx, &collars));
+            log_storage_result("save_presets", save_presets(ctx, &presets));
             ctx.broadcast_state();
         }
 
@@ -639,7 +649,7 @@ async fn handle_text_message<W: picoserve::io::Write>(
                 stop_active_preset(&mut d, &ctx.preset_run_id);
                 d.collars.clone()
             };
-            save_collars(ctx, &collars);
+            log_storage_result("save_collars", save_collars(ctx, &collars));
             ctx.broadcast_state();
         }
 
@@ -690,7 +700,7 @@ async fn handle_text_message<W: picoserve::io::Write>(
                 d.presets = updated;
                 d.presets.clone()
             };
-            save_presets(ctx, &presets);
+            log_storage_result("save_presets", save_presets(ctx, &presets));
             ctx.broadcast_state();
         }
 
@@ -726,7 +736,7 @@ async fn handle_text_message<W: picoserve::io::Write>(
                 stop_active_preset(&mut d, &ctx.preset_run_id);
                 d.presets.clone()
             };
-            save_presets(ctx, &presets);
+            log_storage_result("save_presets", save_presets(ctx, &presets));
             ctx.broadcast_state();
         }
 
@@ -847,20 +857,21 @@ async fn handle_text_message<W: picoserve::io::Write>(
         ClientMessage::SaveDeviceSettings { settings } => {
             info!("Saving device settings...");
             let settings_to_save = settings.clone();
-            let msg = {
+            let changed = {
                 let mut d = ctx.domain.lock().unwrap();
                 let changed = d.device_settings != settings;
-                d.device_settings = settings_to_save.clone();
-                serde_json::to_string(&ServerMessage::DeviceSettings {
-                    settings: settings_to_save.clone(),
-                    reboot_required: changed,
-                })
-                .unwrap()
+                d.device_settings = settings;
+                changed
             };
             match save_settings(ctx, &settings_to_save) {
                 Ok(()) => info!("Device settings saved to NVS"),
                 Err(err) => error!("NVS save_settings failed: {err:#}"),
             }
+            let msg = serde_json::to_string(&ServerMessage::DeviceSettings {
+                settings: settings_to_save,
+                reboot_required: changed,
+            })
+            .unwrap();
             tx.send_text(&msg).await?;
         }
 
@@ -888,7 +899,7 @@ async fn handle_text_message<W: picoserve::io::Write>(
                 d.presets = reordered;
                 d.presets.clone()
             };
-            save_presets(ctx, &presets);
+            log_storage_result("save_presets", save_presets(ctx, &presets));
             ctx.broadcast_state();
         }
 
@@ -921,8 +932,8 @@ async fn handle_text_message<W: picoserve::io::Write>(
                 d.presets = data.presets;
                 (d.collars.clone(), d.presets.clone())
             };
-            save_collars(ctx, &collars);
-            save_presets(ctx, &presets);
+            log_storage_result("save_collars", save_collars(ctx, &collars));
+            log_storage_result("save_presets", save_presets(ctx, &presets));
             ctx.broadcast_state();
         }
     }
