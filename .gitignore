@@ -1,0 +1,14 @@
+/bad-pcb
+/target
+/.embuild
+.cargo-home
+.rustup
+.toolchain-bin
+wifi.toml
+export-esp.sh
+.direnv
+espflash.toml
+partitions.csv
+sdkconfig.defaults.partitions
+*.bin
+out.txt

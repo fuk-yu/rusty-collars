@@ -1,0 +1,1480 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Collars</title>
+<link rel="icon" href="/favicon.ico" type="image/svg+xml">
+<style>
+:root {
+  --bg: #1a1a2e; --surface: #16213e; --surface2: #0f3460;
+  --accent: #e94560; --accent2: #533483; --text: #eee; --text2: #aaa;
+  --ok: #4ecca3; --warn: #ffc947; --danger: #e94560;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: system-ui, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
+.page-header { display: flex; align-items: center; gap: 12px; padding: 10px 16px; background: var(--surface); border-bottom: 2px solid var(--accent); }
+.header-left { display: flex; align-items: center; gap: 12px; min-width: 0; flex-shrink: 1; }
+.header-left h1 { font-size: 1.2em; white-space: nowrap; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.header-right { margin-left: auto; text-align: right; line-height: 1.4; flex-shrink: 0; }
+.header-right .version { font-size: 0.75em; color: var(--text2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.header-right .indicators { font-size: 0.8em; color: var(--text2); display: flex; align-items: center; gap: 8px; justify-content: flex-end; }
+.indicators .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 3px; vertical-align: middle; }
+.indicators .dot.on { background: var(--ok); } .indicators .dot.off { background: var(--danger); }
+
+.tabs { display: flex; background: var(--surface); border-bottom: 1px solid var(--surface2); }
+.tabs button { flex: 1; padding: 10px; border: none; background: none; color: var(--text2); cursor: pointer; font-size: 0.95em; border-bottom: 2px solid transparent; }
+.tabs button.active { color: var(--text); border-bottom-color: var(--accent); }
+.tab-content { display: none; padding: 16px; max-width: 700px; margin: 0 auto; }
+.tab-content.active { display: block; }
+
+input, select { background: var(--surface2); color: var(--text); border: 1px solid #333; border-radius: 4px; padding: 6px 8px; font-size: 0.9em; }
+input:focus, select:focus { outline: none; border-color: var(--accent); }
+button { cursor: pointer; border: none; border-radius: 4px; padding: 8px 14px; font-size: 0.9em; color: #fff; background: var(--surface2); }
+button:active { opacity: 0.8; }
+button:disabled { opacity: 0.45; cursor: not-allowed; }
+
+.card { background: var(--surface); border-radius: 8px; padding: 14px; margin-bottom: 12px; }
+.card h3 { font-size: 1em; margin-bottom: 8px; display: flex; align-items: center; gap: 8px; }
+.card h3 .id { color: var(--text2); font-size: 0.85em; font-weight: normal; }
+
+.form-row { display: flex; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; align-items: center; }
+.form-row label { font-size: 0.85em; color: var(--text2); min-width: 60px; }
+.form-row input, .form-row select { flex: 1; min-width: 80px; }
+
+.btn-add { background: var(--ok); color: #000; font-weight: bold; }
+.btn-del { background: var(--danger); }
+.btn-edit { background: var(--accent2); }
+.btn-run { background: var(--ok); color: #000; font-weight: bold; }
+.btn-stop { background: var(--danger); font-weight: bold; }
+.btn-export { background: var(--accent2); }
+.btn-import { background: var(--surface2); }
+
+.controls { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-top: 8px; }
+.controls .slider-group { display: flex; align-items: center; gap: 6px; flex: 1; min-width: 150px; }
+.controls .slider-group input[type=range] { flex: 1; accent-color: var(--accent); }
+.controls .slider-group .val { min-width: 28px; text-align: right; font-size: 0.85em; color: var(--text2); }
+
+.btn-shock { background: var(--danger); }
+.btn-vibrate { background: var(--warn); color: #000; }
+.btn-beep { background: var(--surface2); border: 1px solid var(--text2); }
+.action-btns button { padding: 10px 16px; font-weight: bold; touch-action: none; user-select: none; -webkit-user-select: none; }
+
+.preset-running { outline: 2px solid var(--ok); outline-offset: -2px; }
+
+/* Preset editor */
+.editor-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 100; overflow-y: auto; }
+.editor-overlay.active { display: flex; justify-content: center; padding: 20px; }
+.editor { background: var(--bg); border-radius: 8px; padding: 20px; width: 100%; max-width: 600px; max-height: 90vh; overflow-y: auto; }
+.editor h2 { margin-bottom: 14px; font-size: 1.1em; }
+.track { background: var(--surface); border-radius: 6px; padding: 10px; margin-bottom: 10px; }
+.track h4 { font-size: 0.9em; color: var(--text2); margin-bottom: 6px; display: flex; justify-content: space-between; }
+.step { display: flex; flex-direction: column; gap: 8px; margin-bottom: 8px; padding: 8px; border-radius: 6px; background: rgba(255,255,255,0.03); }
+.step select, .step input { font-size: 0.85em; padding: 4px 6px; }
+.step-header { display: flex; gap: 6px; align-items: center; }
+.step-header select { flex: 1; min-width: 0; }
+.step-controls { display: flex; flex-direction: column; gap: 6px; }
+.step .slider-group { display: flex; align-items: center; gap: 8px; min-width: 0; width: 100%; }
+.step .slider-group .slider-label { width: 60px; flex-shrink: 0; font-size: 0.8em; color: var(--text2); }
+.step .slider-group input[type=range] { flex: 1; accent-color: var(--accent); }
+.step .slider-group .val { min-width: 32px; text-align: right; font-size: 0.85em; color: var(--text2); }
+.editor-actions { display: flex; gap: 8px; margin-top: 14px; justify-content: flex-end; }
+.step-reorder { display: flex; flex-direction: column; gap: 1px; }
+.step-reorder button { padding: 1px 5px; font-size: 0.7em; line-height: 1; background: var(--surface2); }
+.track-header { cursor: pointer; user-select: none; display: flex; justify-content: space-between; align-items: center; }
+.track-header .fold-arrow { transition: transform 0.15s; }
+.track-header .fold-arrow.open { transform: rotate(90deg); }
+.track-body { display: none; }
+.track-body.open { display: block; }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.debug-toolbar { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; align-items: center; }
+.debug-events { max-height: 60vh; overflow-y: auto; display: flex; flex-direction: column; gap: 1px; }
+.debug-event { font-size: 0.8em; line-height: 1.3; padding: 4px 8px; background: var(--surface2); border-radius: 2px; white-space: nowrap; }
+.debug-event .ts { color: var(--text2); }
+.debug-event .raw { color: var(--text2); }
+.debug-event .cksum-ok { color: var(--ok); }
+.debug-event .cksum-bad { color: var(--danger); font-weight: bold; }
+
+/* Floating STOP button */
+.stop-fab {
+  position: fixed; bottom: 24px; right: 24px; z-index: 50;
+  width: 72px; height: 72px; border-radius: 50%;
+  background: var(--danger); color: #fff; font-weight: bold; font-size: 1em;
+  border: 3px solid rgba(255,255,255,0.3);
+  box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer; touch-action: none; user-select: none; -webkit-user-select: none;
+  line-height: 1.1; text-align: center; padding: 0;
+}
+.stop-fab:active { transform: scale(0.93); }
+.stop-fab:disabled { opacity: 0.5; cursor: not-allowed; }
+
+/* Clients tooltip */
+.clients-wrapper { position: relative; cursor: pointer; }
+.clients-tooltip {
+  display: none; position: absolute; right: 0; top: 100%; margin-top: 4px;
+  background: var(--surface); border: 1px solid var(--accent); border-radius: 6px;
+  padding: 6px 10px; font-size: 0.8em; white-space: nowrap; z-index: 200;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+}
+.clients-wrapper.show-tooltip .clients-tooltip { display: block; }
+</style>
+</head>
+<body>
+
+<div class="page-header">
+  <div class="header-left">
+    <svg viewBox="0 0 32 32" style="width:32px;height:32px;flex-shrink:0"><rect width="32" height="32" rx="6" fill="#1a1a2e" stroke="var(--accent)" stroke-width="2"/><text x="16" y="24" font-size="22" text-anchor="middle">&#x26A1;</text></svg>
+  </div>
+  <div class="header-right">
+    <div class="version mono" id="app-version"></div>
+    <div class="indicators" id="indicators">
+      <span><span class="dot off" id="dot"></span> <span id="conn-text">Connecting...</span></span>
+      <span id="uptime-text"></span>
+      <span class="clients-wrapper" id="clients-wrapper"><span id="clients-text"></span><div class="clients-tooltip" id="clients-tooltip"></div></span>
+      <span id="heap-text"></span>
+    </div>
+  </div>
+</div>
+
+<div class="tabs">
+  <button class="active" onclick="showTab('presets')">Presets</button>
+  <button onclick="showTab('remotes')">Remotes</button>
+  <button onclick="showTab('debug')">Debug</button>
+  <button onclick="showTab('settings')">Settings</button>
+</div>
+
+<div class="tab-content" id="tab-remotes">
+  <div class="card">
+    <div class="form-row">
+      <input id="add-name" placeholder="Name">
+      <input id="add-id" placeholder="ID (hex)" style="width:90px">
+      <select id="add-ch"><option value="0">CH1</option><option value="1">CH2</option><option value="2">CH3</option></select>
+      <button class="btn-add" onclick="addRemote()">+ Add</button>
+    </div>
+  </div>
+  <div id="remote-list"></div>
+</div>
+
+<div class="tab-content active" id="tab-presets">
+  <button class="btn-add" onclick="openPresetEditor(null)" style="margin-bottom:12px">+ New Preset</button>
+  <div id="preset-list"></div>
+</div>
+
+<div class="tab-content" id="tab-debug">
+  <div class="card">
+    <div class="debug-toolbar">
+      <button class="btn-run" id="rf-debug-toggle" onclick="toggleRfDebug()">Start Listening</button>
+      <button class="btn-del" onclick="clearRfDebug()">Clear</button>
+      <span id="rf-debug-status" style="font-size:0.85em;color:var(--text2)">Receiver idle</span>
+    </div>
+    <div id="rf-debug-events" class="debug-events"></div>
+  </div>
+  <div class="card">
+    <h3>Stress Test</h3>
+    <div class="form-row" style="margin-top:8px">
+      <label>Clients</label>
+      <input type="number" id="stress-clients" value="3" min="1" max="6" style="width:50px">
+      <label>Duration (s)</label>
+      <input type="number" id="stress-duration" value="10" min="1" max="60" style="width:50px">
+      <button class="btn-run" id="stress-btn" onclick="runStressTest()">Run</button>
+    </div>
+    <div id="stress-log" style="font-size:0.8em;color:var(--text2);margin-top:8px;max-height:200px;overflow-y:auto;font-family:monospace;white-space:pre-wrap"></div>
+  </div>
+</div>
+
+<div class="tab-content" id="tab-settings">
+  <div class="card">
+    <h3>WiFi Client (STA)</h3>
+    <div class="form-row" style="margin-top:8px">
+      <label>SSID</label>
+      <input type="text" id="settings-wifi-ssid" placeholder="(use build default)">
+      <label>Password</label>
+      <input type="password" id="settings-wifi-password" placeholder="(use build default)">
+    </div>
+  </div>
+  <div class="card">
+    <h3>WiFi Access Point</h3>
+    <div class="form-row" style="margin-top:8px">
+      <label style="min-width:auto"><input type="checkbox" id="settings-ap-enabled"> Enable AP (SSID: rfcollars)</label>
+    </div>
+    <div class="form-row">
+      <label>AP Password</label>
+      <input type="text" id="settings-ap-password" placeholder="rfcollars">
+    </div>
+  </div>
+  <div class="card">
+    <h3>GPIO Pins</h3>
+    <div class="form-row" style="margin-top:8px">
+      <label>TX LED</label>
+      <input type="number" id="settings-tx-led-pin" min="0" max="54" style="width:60px">
+      <label>RX LED</label>
+      <input type="number" id="settings-rx-led-pin" min="0" max="54" style="width:60px">
+      <label>RF TX</label>
+      <input type="number" id="settings-tx-pin" min="0" max="54" style="width:60px">
+      <label>RF RX</label>
+      <input type="number" id="settings-rx-pin" min="0" max="54" style="width:60px">
+    </div>
+  </div>
+  <div class="card">
+    <h3>Server</h3>
+    <div class="form-row" style="margin-top:8px">
+      <label>Max clients</label>
+      <input type="number" id="settings-max-clients" min="1" max="16" style="width:60px">
+    </div>
+  </div>
+  <div class="card">
+    <div class="form-row">
+      <button class="btn-add" onclick="saveDeviceSettings()">Save Settings</button>
+      <button class="btn-del" onclick="rebootDevice()">Reboot</button>
+    </div>
+    <div id="settings-status" style="font-size:0.85em;color:var(--text2);margin-top:6px"></div>
+  </div>
+  <div class="card">
+    <h3>Firmware Update (OTA)</h3>
+    <div class="form-row" style="margin-top:8px">
+      <button class="btn-add" id="ota-btn" onclick="document.getElementById('ota-file').click()">Select firmware .bin</button>
+      <input type="file" id="ota-file" accept=".bin" style="display:none" onchange="startOta(event)">
+    </div>
+    <div id="ota-progress" style="display:none;margin-top:8px">
+      <div style="background:var(--surface2);border-radius:4px;overflow:hidden;height:20px">
+        <div id="ota-bar" style="background:var(--ok);height:100%;width:0%;transition:width 0.3s"></div>
+      </div>
+      <div id="ota-status" style="font-size:0.85em;color:var(--text2);margin-top:4px"></div>
+    </div>
+  </div>
+  <div class="card">
+    <h3>Data</h3>
+    <div class="form-row" style="margin-top:8px">
+      <button class="btn-export" onclick="doExport()">Export JSON</button>
+      <button class="btn-import" onclick="document.getElementById('import-file').click()">Import JSON</button>
+      <input type="file" id="import-file" accept=".json" style="display:none" onchange="doImport(event)">
+    </div>
+  </div>
+</div>
+
+<!-- Preset Editor Overlay -->
+<!-- Remote Edit Dialog -->
+<div class="editor-overlay" id="remote-editor-overlay">
+  <div class="editor" style="max-width:400px">
+    <h2 id="remote-editor-title">Edit Remote</h2>
+    <input type="hidden" id="remote-editor-original-name">
+    <div class="form-row">
+      <label>Name</label>
+      <input type="text" id="remote-editor-name" placeholder="Remote name">
+    </div>
+    <div class="form-row">
+      <label>ID</label>
+      <input type="text" id="remote-editor-id" placeholder="Hex or decimal (e.g. 0x9B7A)">
+    </div>
+    <div class="form-row">
+      <label>Channel</label>
+      <select id="remote-editor-ch"><option value="0">CH1</option><option value="1">CH2</option><option value="2">CH3</option></select>
+    </div>
+    <div class="editor-actions">
+      <button onclick="closeRemoteEditor()">Cancel</button>
+      <button class="btn-add" onclick="saveRemoteEditor()">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- Preset Editor -->
+<div class="editor-overlay" id="editor-overlay">
+  <div class="editor">
+    <h2 id="editor-title">New Preset</h2>
+    <div class="form-row">
+      <label>Name</label>
+      <input id="editor-name" placeholder="Preset name">
+    </div>
+    <div id="editor-tracks"></div>
+    <button onclick="editorAddTrack()" style="margin-top:8px">+ Add Track</button>
+    <div class="editor-actions">
+      <button onclick="closeEditor()">Cancel</button>
+      <button class="btn-add" onclick="savePreset()">Save</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const FRONTEND_APP_VERSION = "__RUSTY_COLLARS_APP_VERSION__";
+let ws = null;
+let state = { app_version: null, collars: [], presets: [], preset_running: null, rf_lockout_remaining_ms: 0 };
+let rfDebug = { listening: false, events: [] };
+let rfDebugWanted = false;
+let editorData = null; // working copy during editing
+let editorOriginalName = null;
+const WS_RECONNECT_BASE_DELAY_MS = 500;
+const WS_RECONNECT_MAX_DELAY_MS = 5000;
+const RF_LOCKOUT_TICK_MS = 100;
+let wsReconnectDelayMs = WS_RECONNECT_BASE_DELAY_MS;
+let wsReconnectTimer = null;
+let rfLockoutDeadlineAt = 0;
+let rfLockoutTicker = null;
+const activeHoldStops = new Set();
+const WS_PING_INTERVAL_MS = 1000;
+const WS_PING_TIMEOUT_MS = 3000;
+const PRESET_DURATION_MIN_MS = 500;
+const PRESET_DURATION_MAX_MS = 10000;
+const PRESET_DURATION_STEP_MS = 500;
+let statusConnected = false;
+let statusText = 'Connecting...';
+let wsPingMs = null;
+let wsPingInterval = null;
+let wsPingNonce = 0;
+let pendingPing = null;
+let appReloadPending = false;
+
+// --- WebSocket ---
+
+function renderConnectionStatus() {
+  const dot = document.getElementById('dot');
+  const connText = document.getElementById('conn-text');
+  if (!dot || !connText) return;
+  dot.className = statusConnected ? 'dot on' : 'dot off';
+  if (statusConnected) {
+    connText.textContent = wsPingMs === null ? '\uD83C\uDFD3 ...' : `\uD83C\uDFD3 ${wsPingMs}ms`;
+  } else {
+    connText.textContent = statusText;
+  }
+}
+
+function formatUptime(totalSeconds) {
+  if (totalSeconds == null) return '';
+  const d = Math.floor(totalSeconds / 86400);
+  const h = Math.floor((totalSeconds % 86400) / 3600);
+  const m = Math.floor((totalSeconds % 3600) / 60);
+  const s = totalSeconds % 60;
+  const parts = [];
+  if (d > 0) parts.push(d + 'd');
+  if (h > 0 || d > 0) parts.push(h + 'h');
+  if (m > 0 || h > 0 || d > 0) parts.push(m + 'm');
+  parts.push(s + 's');
+  return parts.join(' ');
+}
+
+function renderUptime() {
+  const el = document.getElementById('uptime-text');
+  if (!el || state.server_uptime_s == null) return;
+  el.textContent = '\u23F1\uFE0F ' + formatUptime(state.server_uptime_s);
+}
+
+function formatBytes(bytes) {
+  if (bytes >= 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + 'MB';
+  if (bytes >= 1024) return (bytes / 1024).toFixed(1) + 'KB';
+  return bytes + 'B';
+}
+
+function renderClients() {
+  const el = document.getElementById('clients-text');
+  if (!el || state.connected_clients == null) return;
+  el.textContent = '\uD83D\uDC65 ' + state.connected_clients;
+  const tooltip = document.getElementById('clients-tooltip');
+  if (tooltip) {
+    const ips = state.client_ips || [];
+    tooltip.innerHTML = ips.length ? ips.map(ip => `<div>${ip}</div>`).join('') : '<div>No clients</div>';
+  }
+}
+
+
+function renderHeap() {
+  const el = document.getElementById('heap-text');
+  if (!el || state.free_heap_bytes == null) return;
+  el.textContent = '\uD83D\uDCBE ' + formatBytes(state.free_heap_bytes);
+}
+
+function renderAppVersion() {
+  const el = document.getElementById('app-version');
+  if (!el) return;
+  el.textContent = state.app_version || FRONTEND_APP_VERSION;
+}
+
+function setConnectionStatus(connected, text) {
+  statusConnected = connected;
+  statusText = text;
+  renderConnectionStatus();
+}
+
+function resetPingState() {
+  wsPingMs = null;
+  pendingPing = null;
+}
+
+function clearPingTimer() {
+  if (wsPingInterval !== null) {
+    clearInterval(wsPingInterval);
+    wsPingInterval = null;
+  }
+}
+
+function sendPing() {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  const now = performance.now();
+  if (pendingPing !== null) {
+    if (now - pendingPing.startedAt >= WS_PING_TIMEOUT_MS) {
+      // Pong never arrived - connection is dead. Force close to trigger reconnect.
+      console.warn('Ping timeout - forcing reconnect');
+      ws.close();
+    }
+    return;
+  }
+  const nonce = ++wsPingNonce;
+  pendingPing = { nonce, startedAt: now };
+  ws.send(JSON.stringify({ type: 'ping', nonce }));
+}
+
+function startPingTimer() {
+  clearPingTimer();
+  sendPing();
+  wsPingInterval = setInterval(sendPing, WS_PING_INTERVAL_MS);
+}
+
+function handlePong(msg) {
+  if (pendingPing === null || pendingPing.nonce !== msg.nonce) return;
+  wsPingMs = Math.max(1, Math.round(performance.now() - pendingPing.startedAt));
+  pendingPing = null;
+  if (msg.server_uptime_s != null) state.server_uptime_s = msg.server_uptime_s;
+  if (msg.free_heap_bytes != null) state.free_heap_bytes = msg.free_heap_bytes;
+  if (msg.connected_clients != null) state.connected_clients = msg.connected_clients;
+  if (msg.client_ips) state.client_ips = msg.client_ips;
+  renderConnectionStatus();
+  renderUptime();
+  renderClients();
+  renderHeap();
+}
+
+function clearReconnectTimer() {
+  if (wsReconnectTimer !== null) {
+    clearTimeout(wsReconnectTimer);
+    wsReconnectTimer = null;
+  }
+}
+
+function reloadIfAppVersionChanged(serverAppVersion) {
+  if (appReloadPending || !serverAppVersion || serverAppVersion === FRONTEND_APP_VERSION) return;
+  appReloadPending = true;
+  setConnectionStatus(false, 'Firmware updated - reloading...');
+  window.location.reload();
+}
+
+function scheduleReconnect() {
+  if (wsReconnectTimer !== null) return;
+  const delayMs = wsReconnectDelayMs;
+  setConnectionStatus(false, 'Disconnected - reconnecting in ' + (delayMs / 1000).toFixed(1) + 's...');
+  wsReconnectTimer = setTimeout(() => {
+    wsReconnectTimer = null;
+    wsReconnectDelayMs = Math.min(wsReconnectDelayMs * 2, WS_RECONNECT_MAX_DELAY_MS);
+    connect();
+  }, delayMs);
+}
+
+function connect() {
+  if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
+  setConnectionStatus(false, 'Connecting...');
+  const wsProtocol = location.protocol === 'https:' ? 'wss://' : 'ws://';
+  const socket = new WebSocket(wsProtocol + location.host + '/ws');
+  ws = socket;
+  socket.onopen = () => {
+    if (ws !== socket) {
+      socket.close();
+      return;
+    }
+    clearReconnectTimer();
+    wsReconnectDelayMs = WS_RECONNECT_BASE_DELAY_MS;
+    resetPingState();
+    setConnectionStatus(true, 'Ping ...');
+    startPingTimer();
+    loadDeviceSettings();
+    if (rfDebugWanted) {
+      send({ type: 'start_rf_debug' });
+    }
+  };
+  socket.onclose = () => {
+    if (ws !== socket) return;
+    ws = null;
+    clearPingTimer();
+    resetPingState();
+    rfDebug.listening = false;
+    renderDebug();
+    scheduleReconnect();
+  };
+  socket.onerror = () => {
+    if (ws !== socket) return;
+    console.warn('WebSocket error');
+  };
+  socket.onmessage = (e) => {
+    if (ws !== socket) return;
+    const msg = JSON.parse(e.data);
+    switch (msg.type) {
+      case 'state':
+        reloadIfAppVersionChanged(msg.app_version);
+        state = msg;
+        setRfLockoutRemainingMs(msg.rf_lockout_remaining_ms || 0);
+        render();
+        break;
+      case 'pong':
+        handlePong(msg);
+        break;
+      case 'rf_debug_state':
+        rfDebug = { listening: msg.listening, events: msg.events };
+        renderDebug();
+        break;
+      case 'rf_debug_event':
+        rfDebug.events.push(msg.event);
+        if (rfDebug.events.length > 100) {
+          rfDebug.events.splice(0, rfDebug.events.length - 100);
+        }
+        renderDebug();
+        break;
+      case 'export_data':
+        downloadJson(msg.data);
+        break;
+      case 'device_settings':
+        state.device_settings = msg.settings;
+        handleDeviceSettings(msg);
+        renderDebug();
+        break;
+      case 'error':
+        alert(msg.message);
+        break;
+    }
+  };
+}
+
+function send(obj) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    const message = 'WebSocket is not connected';
+    alert(message);
+    throw new Error(message);
+  }
+  ws.send(JSON.stringify(obj));
+}
+
+// --- Tabs ---
+
+function showTab(name) {
+  document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
+  document.querySelectorAll('.tabs button').forEach(el => el.classList.remove('active'));
+  document.getElementById('tab-' + name).classList.add('active');
+  document.querySelectorAll('.tabs button').forEach(el => {
+    if (el.textContent.toLowerCase() === name) el.classList.add('active');
+  });
+}
+
+// --- Render ---
+
+function render() {
+  if (isRfLocked()) {
+    stopAllHeldButtons();
+  }
+  renderAppVersion();
+  renderUptime();
+  renderClients();
+  renderHeap();
+  renderStopAllButton();
+  renderRemotes();
+  renderPresets();
+  renderDebug();
+}
+
+function getCollarPref(name, key, def) {
+  return sessionStorage.getItem(`collar:${name}:${key}`) ?? def;
+}
+function setCollarPref(name, key, val) {
+  sessionStorage.setItem(`collar:${name}:${key}`, val);
+}
+
+function renderRemotes() {
+  const list = document.getElementById('remote-list');
+  list.innerHTML = '';
+  const rfLocked = isRfLocked();
+  for (const c of state.collars) {
+    const card = document.createElement('div');
+    card.className = 'card';
+    const idHex = '0x' + c.collar_id.toString(16).toUpperCase().padStart(4, '0');
+    const savedLevel = getCollarPref(c.name, 'level', '30');
+    const savedDur = getCollarPref(c.name, 'duration', '2');
+    const whilePressed = getCollarPref(c.name, 'whilePressed', 'false') === 'true';
+    card.innerHTML = `
+      <h3>
+        ${esc(c.name)} <span class="id">${idHex} CH${c.channel + 1}</span>
+        <span style="flex:1"></span>
+        <button class="btn-edit" data-action="edit-remote" data-name="${esc(c.name)}">Edit</button>
+        <button class="btn-del" data-action="delete-remote" data-name="${esc(c.name)}">Del</button>
+      </h3>
+      <div class="controls">
+        <div class="slider-group">
+          <label style="font-size:0.8em;color:var(--text2)">Level</label>
+          <input type="range" min="0" max="99" value="${savedLevel}" id="slider-${esc(c.name)}"
+            oninput="setCollarPref('${esc(c.name)}','level',this.value);document.getElementById('val-${esc(c.name)}').textContent=this.value">
+          <span class="val" id="val-${esc(c.name)}">${savedLevel}</span>
+        </div>
+      </div>
+      <div class="controls" style="margin-top:4px">
+        <div class="slider-group" id="dur-group-${esc(c.name)}" ${whilePressed ? 'style="opacity:0.45"' : ''}>
+          <label style="font-size:0.8em;color:var(--text2)">Duration</label>
+          <input type="range" min="0.5" max="10" step="0.5" value="${savedDur}" ${whilePressed ? 'disabled' : ''}
+            id="dur-slider-${esc(c.name)}"
+            oninput="setCollarPref('${esc(c.name)}','duration',this.value);document.getElementById('dur-val-${esc(c.name)}').textContent=this.value+'s'">
+          <span class="val" id="dur-val-${esc(c.name)}">${savedDur}s</span>
+        </div>
+        <label style="font-size:0.8em;color:var(--text2);white-space:nowrap;cursor:pointer">
+          <input type="checkbox" id="hold-${esc(c.name)}" ${whilePressed ? 'checked' : ''}
+            onchange="toggleWhilePressed('${esc(c.name)}',this.checked)"> While pressed
+        </label>
+      </div>
+      <div class="controls action-btns" style="margin-top:6px">
+        <button class="btn-shock" data-collar="${esc(c.name)}" data-mode="shock" ${rfLocked ? 'disabled' : ''}>Zap</button>
+        <button class="btn-vibrate" data-collar="${esc(c.name)}" data-mode="vibrate" ${rfLocked ? 'disabled' : ''}>Vibrate</button>
+        <button class="btn-beep" data-collar="${esc(c.name)}" data-mode="beep" ${rfLocked ? 'disabled' : ''}>Beep</button>
+      </div>
+    `;
+    list.appendChild(card);
+  }
+
+  // Attach action button handlers
+  document.querySelectorAll('.action-btns button').forEach(btn => {
+    const collar = btn.dataset.collar;
+    const whilePressed = getCollarPref(collar, 'whilePressed', 'false') === 'true';
+    if (whilePressed) {
+      // Hold mode: send repeatedly while button is held
+      setupHoldButton(btn, () => {
+        const mode = btn.dataset.mode;
+        const slider = document.getElementById('slider-' + collar);
+        const intensity = slider ? parseInt(slider.value) : 30;
+        send({ type: 'command', collar_name: collar, mode, intensity });
+      });
+    } else {
+      // Timed mode: send for the configured duration on click
+      setupTimedButton(btn);
+    }
+  });
+  list.querySelectorAll('[data-action="edit-remote"]').forEach(btn => {
+    btn.addEventListener('click', () => openRemoteEditor(btn.dataset.name));
+  });
+  list.querySelectorAll('[data-action="delete-remote"]').forEach(btn => {
+    btn.addEventListener('click', () => deleteRemote(btn.dataset.name));
+  });
+}
+
+function toggleWhilePressed(name, checked) {
+  setCollarPref(name, 'whilePressed', checked);
+  const durGroup = document.getElementById('dur-group-' + name);
+  const durSlider = document.getElementById('dur-slider-' + name);
+  if (durGroup) durGroup.style.opacity = checked ? '0.45' : '';
+  if (durSlider) durSlider.disabled = checked;
+  renderRemotes(); // re-attach button handlers
+}
+
+function setupTimedButton(btn) {
+  function fire(e) {
+    e.preventDefault();
+    if (isRfLocked()) return;
+    const collar = btn.dataset.collar;
+    const mode = btn.dataset.mode;
+    const slider = document.getElementById('slider-' + collar);
+    const intensity = slider ? parseInt(slider.value) : 30;
+    const durSlider = document.getElementById('dur-slider-' + collar);
+    const durationSec = durSlider ? parseFloat(durSlider.value) : 2;
+    const durationMs = Math.round(durationSec * 1000);
+    const intervalMs = 200;
+
+    // Send commands for the configured duration
+    let sent = 0;
+    const total = Math.ceil(durationMs / intervalMs);
+    send({ type: 'command', collar_name: collar, mode, intensity });
+    sent++;
+    const iv = setInterval(() => {
+      if (sent >= total) { clearInterval(iv); return; }
+      send({ type: 'command', collar_name: collar, mode, intensity });
+      sent++;
+    }, intervalMs);
+  }
+  btn.addEventListener('mousedown', fire);
+  btn.addEventListener('touchstart', fire, { passive: false });
+}
+
+function renderPresets() {
+  const list = document.getElementById('preset-list');
+  list.innerHTML = '';
+  const rfLocked = isRfLocked();
+  for (let pi = 0; pi < state.presets.length; pi++) {
+    const p = state.presets[pi];
+    const isRunning = state.preset_running === p.name;
+    const card = document.createElement('div');
+    card.className = 'card' + (isRunning ? ' preset-running' : '');
+    card.draggable = true;
+    card.dataset.presetIndex = pi;
+
+    let summary = p.tracks.map(t => {
+      const steps = t.steps.map(s => describePresetStep(s)).join(' > ');
+      return `<em>${esc(t.collar_name)}</em>: ${steps}`;
+    }).join('<br>');
+
+    card.innerHTML = `
+      <h3>
+        ${esc(p.name)}
+        <span style="flex:1"></span>
+        ${isRunning
+          ? '<button class="btn-stop" onclick="stopPreset()">Stop</button>'
+          : `<button class="btn-run" data-action="run-preset" data-name="${esc(p.name)}" ${rfLocked ? 'disabled' : ''}>Run</button>`}
+        <button class="btn-edit" data-action="dup-preset" data-name="${esc(p.name)}" style="background:var(--accent2)">Dup</button>
+        <button class="btn-edit" data-action="edit-preset" data-name="${esc(p.name)}">Edit</button>
+        <button class="btn-del" data-action="delete-preset" data-name="${esc(p.name)}">Del</button>
+      </h3>
+      <div style="font-size:0.85em;color:var(--text2);margin-top:6px">${summary}</div>
+    `;
+    // Drag-and-drop for preset reordering
+    card.addEventListener('dragstart', e => {
+      e.dataTransfer.setData('text/plain', pi);
+      card.style.opacity = '0.5';
+    });
+    card.addEventListener('dragend', () => { card.style.opacity = ''; });
+    card.addEventListener('dragover', e => { e.preventDefault(); card.style.borderTop = '2px solid var(--accent)'; });
+    card.addEventListener('dragleave', () => { card.style.borderTop = ''; });
+    card.addEventListener('drop', e => {
+      e.preventDefault();
+      card.style.borderTop = '';
+      const from = parseInt(e.dataTransfer.getData('text/plain'));
+      const to = pi;
+      if (from !== to) reorderPresets(from, to);
+    });
+    list.appendChild(card);
+  }
+  list.querySelectorAll('[data-action="run-preset"]').forEach(btn => {
+    btn.addEventListener('click', () => runPreset(btn.dataset.name));
+  });
+  list.querySelectorAll('[data-action="edit-preset"]').forEach(btn => {
+    btn.addEventListener('click', () => openPresetEditor(btn.dataset.name));
+  });
+  list.querySelectorAll('[data-action="dup-preset"]').forEach(btn => {
+    btn.addEventListener('click', () => duplicatePreset(btn.dataset.name));
+  });
+  list.querySelectorAll('[data-action="delete-preset"]').forEach(btn => {
+    btn.addEventListener('click', () => deletePreset(btn.dataset.name));
+  });
+}
+
+// --- Collar Actions ---
+
+function addRemote() {
+  const name = document.getElementById('add-name').value.trim();
+  const idStr = document.getElementById('add-id').value.trim();
+  const channel = parseInt(document.getElementById('add-ch').value);
+  if (!name || !idStr) { alert('Name and ID required'); return; }
+  const collar_id = parseCollarId(idStr);
+  if (collar_id === null) { alert('Invalid ID. Use decimal (39802) or hex (0x9B7A or 9B7A)'); return; }
+  send({ type: 'add_collar', name, collar_id, channel });
+  document.getElementById('add-name').value = '';
+  document.getElementById('add-id').value = '';
+}
+
+function openRemoteEditor(name) {
+  const overlay = document.getElementById('remote-editor-overlay');
+  const title = document.getElementById('remote-editor-title');
+  const origField = document.getElementById('remote-editor-original-name');
+  const nameField = document.getElementById('remote-editor-name');
+  const idField = document.getElementById('remote-editor-id');
+  const chField = document.getElementById('remote-editor-ch');
+  if (name) {
+    const c = state.collars.find(x => x.name === name);
+    if (!c) return;
+    title.textContent = 'Edit Remote';
+    origField.value = name;
+    nameField.value = c.name;
+    idField.value = '0x' + c.collar_id.toString(16).toUpperCase().padStart(4, '0');
+    chField.value = c.channel;
+  } else {
+    title.textContent = 'New Remote';
+    origField.value = '';
+    nameField.value = '';
+    idField.value = '';
+    chField.value = '0';
+  }
+  overlay.classList.add('active');
+  nameField.focus();
+}
+
+function closeRemoteEditor() {
+  document.getElementById('remote-editor-overlay').classList.remove('active');
+}
+
+function saveRemoteEditor() {
+  const origName = document.getElementById('remote-editor-original-name').value;
+  const name = document.getElementById('remote-editor-name').value.trim();
+  const idStr = document.getElementById('remote-editor-id').value.trim();
+  const channel = parseInt(document.getElementById('remote-editor-ch').value);
+  if (!name || !idStr) { alert('Name and ID required'); return; }
+  const collar_id = parseCollarId(idStr);
+  if (collar_id === null) { alert('Invalid ID. Use decimal (39802) or hex (0x9B7A or 9B7A)'); return; }
+  if (origName) {
+    send({ type: 'update_collar', original_name: origName, name, collar_id, channel });
+  } else {
+    send({ type: 'add_collar', name, collar_id, channel });
+  }
+  closeRemoteEditor();
+}
+
+function deleteRemote(name) {
+  if (confirm('Delete remote "' + name + '"?')) {
+    send({ type: 'delete_collar', name });
+  }
+}
+
+// --- Preset Actions ---
+
+function runPreset(name) { send({ type: 'run_preset', name }); }
+function stopPreset() {
+  send({ type: 'stop_preset' });
+  state.preset_running = null;
+  render();
+}
+function deletePreset(name) {
+  if (confirm('Delete preset "' + name + '"?')) send({ type: 'delete_preset', name });
+}
+function duplicatePreset(name) {
+  const p = state.presets.find(x => x.name === name);
+  if (!p) return;
+  const copy = JSON.parse(JSON.stringify(p));
+  copy.name = p.name + ' copy';
+  send({ type: 'save_preset', original_name: null, preset: copy });
+}
+function reorderPresets(fromIndex, toIndex) {
+  const presets = state.presets.slice();
+  const [moved] = presets.splice(fromIndex, 1);
+  presets.splice(toIndex, 0, moved);
+  send({ type: 'reorder_presets', names: presets.map(p => p.name) });
+}
+
+// --- Preset Editor ---
+
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function normalizePresetEditorDurationMs(durationMs) {
+  const numericDurationMs = Number.isFinite(durationMs) ? durationMs : PRESET_DURATION_MIN_MS;
+  const clampedDurationMs = clamp(numericDurationMs, PRESET_DURATION_MIN_MS, PRESET_DURATION_MAX_MS);
+  return Math.round(clampedDurationMs / PRESET_DURATION_STEP_MS) * PRESET_DURATION_STEP_MS;
+}
+
+function formatPresetEditorDurationMs(durationMs) {
+  const durationSeconds = normalizePresetEditorDurationMs(durationMs) / 1000;
+  return Number.isInteger(durationSeconds) ? durationSeconds + 's' : durationSeconds.toFixed(1) + 's';
+}
+
+function normalizeEditorPresetDurations(preset) {
+  for (const track of preset.tracks) {
+    for (const step of track.steps) {
+      step.duration_ms = normalizePresetEditorDurationMs(step.duration_ms);
+    }
+  }
+}
+
+function setPresetStepIntensity(trackIndex, stepIndex, value) {
+  const intensity = parseInt(value, 10);
+  editorData.tracks[trackIndex].steps[stepIndex].intensity = intensity;
+  document.getElementById(`preset-val-${trackIndex}-${stepIndex}`).textContent = intensity;
+}
+
+function setPresetStepDuration(trackIndex, stepIndex, value) {
+  const durationMs = normalizePresetEditorDurationMs(Math.round(parseFloat(value) * 1000));
+  editorData.tracks[trackIndex].steps[stepIndex].duration_ms = durationMs;
+  document.getElementById(`preset-duration-${trackIndex}-${stepIndex}`).textContent = formatPresetEditorDurationMs(durationMs);
+}
+
+function openPresetEditor(name) {
+  if (name) {
+    const p = state.presets.find(x => x.name === name);
+    if (!p) return;
+    editorData = JSON.parse(JSON.stringify(p)); // deep clone
+    editorOriginalName = p.name;
+    document.getElementById('editor-title').textContent = 'Edit Preset';
+  } else {
+    editorData = { name: '', tracks: [] };
+    editorOriginalName = null;
+    document.getElementById('editor-title').textContent = 'New Preset';
+  }
+  normalizeEditorPresetDurations(editorData);
+  document.getElementById('editor-name').value = editorData.name;
+  renderEditorTracks();
+  document.getElementById('editor-overlay').classList.add('active');
+}
+
+function closeEditor() {
+  document.getElementById('editor-overlay').classList.remove('active');
+  editorData = null;
+  editorOriginalName = null;
+}
+
+let editorOpenTrack = 0; // which track is unfolded
+
+function renderEditorTracks() {
+  const container = document.getElementById('editor-tracks');
+  container.innerHTML = '';
+  editorData.tracks.forEach((track, ti) => {
+    const div = document.createElement('div');
+    div.className = 'track';
+    const isOpen = (ti === editorOpenTrack);
+    let collarOpts = state.collars.map(c =>
+      `<option value="${esc(c.name)}" ${c.name === track.collar_name ? 'selected' : ''}>${esc(c.name)}</option>`
+    ).join('');
+    div.innerHTML = `
+      <div class="track-header" onclick="editorOpenTrack=${ti};renderEditorTracks()">
+        <span>
+          <span class="fold-arrow ${isOpen ? 'open' : ''}">&#9654;</span>
+          Track: <select onclick="event.stopPropagation()" onchange="editorData.tracks[${ti}].collar_name=this.value">${collarOpts}</select>
+          <span style="color:var(--text2);font-size:0.85em">(${track.steps.length} steps)</span>
+        </span>
+        <button class="btn-del" onclick="event.stopPropagation();editorData.tracks.splice(${ti},1);if(editorOpenTrack>=editorData.tracks.length)editorOpenTrack=Math.max(0,editorData.tracks.length-1);renderEditorTracks()">X</button>
+      </div>
+      <div class="track-body ${isOpen ? 'open' : ''}" id="track-body-${ti}"></div>
+    `;
+    const body = div.querySelector('.track-body');
+    track.steps.forEach((step, si) => {
+      const noLevel = step.mode === 'pause' || step.mode === 'beep';
+      const durationSeconds = (normalizePresetEditorDurationMs(step.duration_ms) / 1000).toFixed(1);
+      const levelControl = noLevel ? '' : `
+        <div class="slider-group">
+          <span class="slider-label">Level</span>
+          <input type="range" min="0" max="99" value="${step.intensity}"
+            oninput="setPresetStepIntensity(${ti},${si},this.value)">
+          <span class="val" id="preset-val-${ti}-${si}">${step.intensity}</span>
+        </div>
+      `;
+      const isFirst = si === 0;
+      const isLast = si === track.steps.length - 1;
+      const stepDiv = document.createElement('div');
+      stepDiv.className = 'step';
+      stepDiv.draggable = true;
+      stepDiv.dataset.stepIndex = si;
+      stepDiv.addEventListener('dragstart', e => {
+        e.dataTransfer.setData('text/plain', `step:${ti}:${si}`);
+        stepDiv.style.opacity = '0.5';
+        e.stopPropagation();
+      });
+      stepDiv.addEventListener('dragend', () => { stepDiv.style.opacity = ''; });
+      stepDiv.addEventListener('dragover', e => { e.preventDefault(); stepDiv.style.borderTop = '2px solid var(--accent)'; e.stopPropagation(); });
+      stepDiv.addEventListener('dragleave', () => { stepDiv.style.borderTop = ''; });
+      stepDiv.addEventListener('drop', e => {
+        e.preventDefault(); e.stopPropagation();
+        stepDiv.style.borderTop = '';
+        const data = e.dataTransfer.getData('text/plain');
+        if (!data.startsWith('step:')) return;
+        const parts = data.split(':');
+        const fromTrack = parseInt(parts[1]), fromStep = parseInt(parts[2]);
+        if (fromTrack === ti && fromStep !== si) {
+          const steps = editorData.tracks[ti].steps;
+          const [moved] = steps.splice(fromStep, 1);
+          steps.splice(fromStep < si ? si - 1 : si, 0, moved);
+          renderEditorTracks();
+        }
+      });
+      stepDiv.innerHTML = `
+        <div style="flex:1">
+          <div class="step-header">
+            <select onchange="editorData.tracks[${ti}].steps[${si}].mode=this.value;renderEditorTracks()">
+              <option value="shock" ${step.mode==='shock'?'selected':''}>Shock</option>
+              <option value="vibrate" ${step.mode==='vibrate'?'selected':''}>Vibrate</option>
+              <option value="beep" ${step.mode==='beep'?'selected':''}>Beep</option>
+              <option value="pause" ${step.mode==='pause'?'selected':''}>Pause</option>
+            </select>
+            <button class="btn-del" onclick="editorData.tracks[${ti}].steps.splice(${si},1);renderEditorTracks()">X</button>
+          </div>
+          <div class="step-controls">
+            ${levelControl}
+            <div class="slider-group">
+              <span class="slider-label">Duration</span>
+              <input type="range"
+                min="${PRESET_DURATION_MIN_MS / 1000}"
+                max="${PRESET_DURATION_MAX_MS / 1000}"
+                step="${PRESET_DURATION_STEP_MS / 1000}"
+                value="${durationSeconds}"
+                oninput="setPresetStepDuration(${ti},${si},this.value)">
+              <span class="val" id="preset-duration-${ti}-${si}">${formatPresetEditorDurationMs(step.duration_ms)}</span>
+            </div>
+          </div>
+        </div>
+      `;
+      body.appendChild(stepDiv);
+    });
+    const addBtn = document.createElement('button');
+    addBtn.textContent = '+ Step';
+    addBtn.style.fontSize = '0.85em';
+    addBtn.onclick = () => {
+      track.steps.push({ mode: 'vibrate', intensity: 30, duration_ms: 1000 });
+      renderEditorTracks();
+    };
+    body.appendChild(addBtn);
+    container.appendChild(div);
+  });
+}
+
+function moveStep(trackIndex, stepIndex, direction) {
+  const steps = editorData.tracks[trackIndex].steps;
+  const targetIndex = stepIndex + direction;
+  if (targetIndex < 0 || targetIndex >= steps.length) return;
+  [steps[stepIndex], steps[targetIndex]] = [steps[targetIndex], steps[stepIndex]];
+  renderEditorTracks();
+}
+
+function editorAddTrack() {
+  const defaultCollar = state.collars.length > 0 ? state.collars[0].name : '';
+  editorData.tracks.push({ collar_name: defaultCollar, steps: [] });
+  editorOpenTrack = editorData.tracks.length - 1; // auto-open new track
+  renderEditorTracks();
+}
+
+function savePreset() {
+  editorData.name = document.getElementById('editor-name').value.trim();
+  if (!editorData.name) { alert('Preset name required'); return; }
+  normalizeEditorPresetDurations(editorData);
+  send({ type: 'save_preset', original_name: editorOriginalName, preset: editorData });
+  closeEditor();
+}
+
+// --- Export / Import ---
+
+function doExport() { send({ type: 'export' }); }
+
+// --- OTA Firmware Update ---
+
+async function startOta(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  event.target.value = '';
+
+  if (!file.name.endsWith('.bin')) {
+    alert('Please select a .bin firmware file');
+    return;
+  }
+  if (!confirm(`Upload ${file.name} (${(file.size / 1024).toFixed(0)} KB)? Device will reboot after update.`)) return;
+
+  const btn = document.getElementById('ota-btn');
+  const progress = document.getElementById('ota-progress');
+  const bar = document.getElementById('ota-bar');
+  const status = document.getElementById('ota-status');
+
+  btn.disabled = true;
+  btn.textContent = 'Uploading...';
+  progress.style.display = 'block';
+  bar.style.width = '0%';
+  status.textContent = 'Starting upload...';
+
+  try {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', '/ota');
+    xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+    xhr.timeout = 120000;
+
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable) {
+        const pct = (e.loaded / e.total * 100).toFixed(0);
+        bar.style.width = pct + '%';
+        status.textContent = `Uploading: ${(e.loaded / 1024).toFixed(0)} / ${(e.total / 1024).toFixed(0)} KB (${pct}%)`;
+      }
+    };
+
+    const result = await new Promise((resolve, reject) => {
+      xhr.onload = () => resolve(xhr);
+      xhr.onerror = () => reject(new Error('Network error'));
+      xhr.ontimeout = () => reject(new Error('Upload timeout'));
+      xhr.send(file);
+    });
+
+    if (result.status === 200) {
+      bar.style.width = '100%';
+      bar.style.background = 'var(--ok)';
+      status.textContent = 'Update complete! Device is rebooting...';
+      setConnectionStatus(false, 'Rebooting after OTA...');
+    } else {
+      throw new Error(result.responseText || `HTTP ${result.status}`);
+    }
+  } catch (e) {
+    bar.style.background = 'var(--danger)';
+    status.textContent = 'OTA failed: ' + e.message;
+    status.style.color = 'var(--danger)';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Select firmware .bin';
+  }
+}
+
+// --- Stress Test ---
+
+async function runStressTest() {
+  const numClients = parseInt(document.getElementById('stress-clients').value) || 3;
+  const durationSec = parseInt(document.getElementById('stress-duration').value) || 10;
+  const btn = document.getElementById('stress-btn');
+  const log = document.getElementById('stress-log');
+  btn.disabled = true;
+  btn.textContent = 'Running...';
+  log.textContent = '';
+
+  const slog = (msg) => { log.textContent += msg + '\n'; log.scrollTop = log.scrollHeight; };
+  slog(`Starting stress test: ${numClients} clients, ${durationSec}s`);
+
+  const results = { opened: 0, failed: 0, pings: 0, pongs: 0, errors: 0, latencies: [] };
+  const sockets = [];
+
+  // Open connections
+  for (let i = 0; i < numClients; i++) {
+    try {
+      const s = await new Promise((resolve, reject) => {
+        const sock = new WebSocket('ws://' + location.host + '/ws');
+        sock.onopen = () => { results.opened++; resolve(sock); };
+        sock.onerror = () => { results.failed++; reject(new Error('connect failed')); };
+        setTimeout(() => reject(new Error('connect timeout')), 5000);
+      });
+      sockets.push(s);
+      slog(`  Client ${i + 1}/${numClients} connected`);
+    } catch (e) {
+      slog(`  Client ${i + 1}/${numClients} FAILED: ${e.message}`);
+    }
+  }
+
+  slog(`${results.opened} connected, ${results.failed} failed. Hammering for ${durationSec}s...`);
+
+  // Track pending pings for RTT measurement
+  let nextNonce = 1;
+  const pendingPings = new Map(); // nonce -> timestamp
+
+  // Set up pong handlers
+  sockets.forEach((s, i) => {
+    s.onmessage = (e) => {
+      try {
+        const msg = JSON.parse(e.data);
+        if (msg.type === 'pong' && pendingPings.has(msg.nonce)) {
+          results.pongs++;
+          const rtt = performance.now() - pendingPings.get(msg.nonce);
+          pendingPings.delete(msg.nonce);
+          results.latencies.push(Math.round(rtt));
+        }
+      } catch (_) {}
+    };
+    s.onerror = () => results.errors++;
+    s.onclose = () => {};
+  });
+
+  // Hammer with pings + random messages
+  const endAt = Date.now() + durationSec * 1000;
+  const interval = setInterval(() => {
+    if (Date.now() >= endAt) {
+      clearInterval(interval);
+      return;
+    }
+    for (const s of sockets) {
+      if (s.readyState !== WebSocket.OPEN) continue;
+      // 60% pings (with RTT tracking), 20% export, 20% settings
+      const r = Math.random();
+      if (r < 0.6) {
+        const nonce = nextNonce++;
+        pendingPings.set(nonce, performance.now());
+        results.pings++;
+        s.send(JSON.stringify({ type: 'ping', nonce }));
+      } else if (r < 0.8) {
+        s.send(JSON.stringify({ type: 'export' }));
+      } else {
+        s.send(JSON.stringify({ type: 'get_device_settings' }));
+      }
+    }
+  }, 50); // ~20 msgs/sec per client
+
+  // Wait for duration + drain time for in-flight pongs
+  await new Promise(r => setTimeout(r, durationSec * 1000));
+  clearInterval(interval);
+  slog(`Sending complete. Waiting 2s for in-flight responses...`);
+  await new Promise(r => setTimeout(r, 2000));
+
+  // Close all
+  sockets.forEach(s => { try { s.close(); } catch (_) {} });
+
+  // Report
+  const lats = results.latencies.sort((a, b) => a - b);
+  const avg = lats.length ? Math.round(lats.reduce((a, b) => a + b, 0) / lats.length) : 0;
+  const p50 = lats.length ? lats[Math.floor(lats.length * 0.5)] : 0;
+  const p99 = lats.length ? lats[Math.floor(lats.length * 0.99)] : 0;
+  const max = lats.length ? lats[lats.length - 1] : 0;
+
+  slog('');
+  slog(`=== Results ===`);
+  slog(`Connections: ${results.opened} ok, ${results.failed} failed`);
+  slog(`Pings sent: ${results.pings}, Pongs received: ${results.pongs}`);
+  slog(`Loss: ${results.pings > 0 ? ((1 - results.pongs / results.pings) * 100).toFixed(1) : 0}%`);
+  slog(`Errors: ${results.errors}`);
+  slog(`Latency: avg=${avg}ms p50=${p50}ms p99=${p99}ms max=${max}ms`);
+  slog(`=== Done ===`);
+
+  btn.disabled = false;
+  btn.textContent = 'Run';
+}
+
+function loadDeviceSettings() { send({ type: 'get_device_settings' }); }
+
+function rebootDevice() {
+  if (!confirm('Reboot the device? Active connections will be dropped.')) return;
+  send({ type: 'reboot' });
+  setConnectionStatus(false, 'Rebooting...');
+}
+
+function saveDeviceSettings() {
+  const txLed = parseInt(document.getElementById('settings-tx-led-pin').value);
+  const rxLed = parseInt(document.getElementById('settings-rx-led-pin').value);
+  const tx = parseInt(document.getElementById('settings-tx-pin').value);
+  const rx = parseInt(document.getElementById('settings-rx-pin').value);
+  if ([txLed, rxLed, tx, rx].some(v => isNaN(v) || v < 0 || v > 54)) {
+    alert('Pin numbers must be 0-54');
+    return;
+  }
+  const maxClients = parseInt(document.getElementById('settings-max-clients').value) || 8;
+  send({
+    type: 'save_device_settings',
+    settings: {
+      tx_led_pin: txLed,
+      rx_led_pin: rxLed,
+      rf_tx_pin: tx,
+      rf_rx_pin: rx,
+      wifi_ssid: document.getElementById('settings-wifi-ssid').value,
+      wifi_password: document.getElementById('settings-wifi-password').value,
+      ap_enabled: document.getElementById('settings-ap-enabled').checked,
+      ap_password: document.getElementById('settings-ap-password').value,
+      max_clients: maxClients,
+    }
+  });
+}
+
+function handleDeviceSettings(msg) {
+  const s = msg.settings;
+  document.getElementById('settings-tx-led-pin').value = s.tx_led_pin;
+  document.getElementById('settings-rx-led-pin').value = s.rx_led_pin;
+  document.getElementById('settings-tx-pin').value = s.rf_tx_pin;
+  document.getElementById('settings-rx-pin').value = s.rf_rx_pin;
+  document.getElementById('settings-wifi-ssid').value = s.wifi_ssid || '';
+  document.getElementById('settings-wifi-password').value = s.wifi_password || '';
+  document.getElementById('settings-ap-enabled').checked = s.ap_enabled;
+  document.getElementById('settings-ap-password').value = s.ap_password || '';
+  document.getElementById('settings-max-clients').value = s.max_clients || 8;
+  const status = document.getElementById('settings-status');
+  if (msg.reboot_required) {
+    status.textContent = 'Saved. Reboot required to apply changes.';
+    status.style.color = 'var(--warn)';
+  } else {
+    status.textContent = '';
+  }
+}
+
+function downloadJson(data) {
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'collars-config.json';
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+function doImport(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    try {
+      const data = JSON.parse(reader.result);
+      if (!data.collars || !data.presets) throw new Error('Missing collars/presets');
+      if (confirm('Import will replace all current settings. Continue?')) {
+        send({ type: 'import', data });
+      }
+    } catch (err) {
+      alert('Invalid config file: ' + err.message);
+    }
+  };
+  reader.readAsText(file);
+  e.target.value = '';
+}
+
+// --- RF Debug ---
+
+function toggleRfDebug() {
+  if (rfDebug.listening) {
+    rfDebugWanted = false;
+    send({ type: 'stop_rf_debug' });
+  } else {
+    rfDebugWanted = true;
+    send({ type: 'start_rf_debug' });
+  }
+}
+
+function clearRfDebug() {
+  send({ type: 'clear_rf_debug' });
+}
+
+function stopAllRf() {
+  stopAllHeldButtons();
+  send({ type: 'stop_all' });
+  state.preset_running = null;
+  setRfLockoutRemainingMs(10000);
+  render();
+}
+
+function setRfLockoutRemainingMs(remainingMs) {
+  rfLockoutDeadlineAt = performance.now() + Math.max(0, remainingMs);
+  if (remainingMs > 0) {
+    stopAllHeldButtons();
+    ensureRfLockoutTicker();
+  } else if (rfLockoutTicker !== null) {
+    clearInterval(rfLockoutTicker);
+    rfLockoutTicker = null;
+  }
+}
+
+function ensureRfLockoutTicker() {
+  if (rfLockoutTicker !== null) return;
+  rfLockoutTicker = setInterval(() => {
+    renderStopAllButton();
+    if (!isRfLocked()) {
+      clearInterval(rfLockoutTicker);
+      rfLockoutTicker = null;
+      render();
+    }
+  }, RF_LOCKOUT_TICK_MS);
+}
+
+function getRfLockoutRemainingMs() {
+  return Math.max(0, rfLockoutDeadlineAt - performance.now());
+}
+
+function isRfLocked() {
+  return getRfLockoutRemainingMs() > 0;
+}
+
+function renderStopAllButton() {
+  const btn = document.getElementById('stop-all-btn');
+  if (!btn) return;
+  const remainingMs = getRfLockoutRemainingMs();
+  btn.disabled = remainingMs > 0;
+  btn.textContent = remainingMs > 0 ? `STOP ${Math.ceil(remainingMs / 100) / 10}s` : 'STOP';
+}
+
+function stopAllHeldButtons() {
+  [...activeHoldStops].forEach(stop => stop());
+}
+
+function renderDebug() {
+  const toggle = document.getElementById('rf-debug-toggle');
+  const status = document.getElementById('rf-debug-status');
+  const list = document.getElementById('rf-debug-events');
+  if (!toggle || !status || !list) return;
+
+  toggle.textContent = rfDebug.listening ? 'Stop Listening' : 'Start Listening';
+  toggle.className = rfDebug.listening ? 'btn-stop' : 'btn-run';
+  status.textContent = rfDebug.listening
+    ? 'Listening on GPIO' + (state.device_settings?.rf_rx_pin ?? '?') + ' for type-1 433 MHz frames'
+    : 'Receiver idle on GPIO' + (state.device_settings?.rf_rx_pin ?? '?');
+
+  if (rfDebug.events.length === 0) {
+    list.innerHTML = '<div style="font-size:0.85em;color:var(--text2)">No RF frames captured yet.</div>';
+    return;
+  }
+
+  list.innerHTML = '';
+  [...rfDebug.events].reverse().forEach(event => {
+    const item = document.createElement('div');
+    item.className = 'debug-event mono';
+    const id = event.collar_id.toString(16).toUpperCase().padStart(4, '0');
+    const ckClass = event.checksum_ok ? 'cksum-ok' : 'cksum-bad';
+    const ckText = event.checksum_ok ? '\u2713' : '\u2717';
+    item.innerHTML = `<span class="ts">${formatDebugTime(event.received_at_ms)}</span> 0x${id} ch${event.channel} ${describeRfMode(event)} i=${event.intensity} <span class="raw">${esc(event.raw_hex)}</span> <span class="${ckClass}">${ckText}</span>`;
+    list.appendChild(item);
+  });
+  list.scrollTop = 0;
+}
+
+// --- Utilities ---
+
+function esc(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
+
+function formatDebugTime(ms) {
+  return (ms / 1000).toFixed(3) + 's';
+}
+
+function describeRfMode(event) {
+  if (event.mode) return event.mode;
+  return 'unknown(' + event.mode_raw + ')';
+}
+
+function parseCollarId(s) {
+  s = s.trim();
+  let n;
+  if (s.startsWith('0x') || s.startsWith('0X')) {
+    n = parseInt(s.slice(2), 16);
+  } else if (/^[0-9a-fA-F]+$/.test(s) && /[a-fA-F]/.test(s)) {
+    // Contains hex letters, treat as hex
+    n = parseInt(s, 16);
+  } else {
+    n = parseInt(s, 10);
+  }
+  if (isNaN(n) || n < 0 || n > 0xFFFF) return null;
+  return n;
+}
+
+function setupHoldButton(btn, onFire) {
+  let interval = null;
+  function collarCommandPayload() {
+    const collar = btn.dataset.collar;
+    const mode = btn.dataset.mode;
+    const slider = document.getElementById('slider-' + collar);
+    const intensity = slider ? parseInt(slider.value) : 30;
+    return { collar_name: collar, mode: mode, intensity: intensity };
+  }
+  function start(e) {
+    e.preventDefault();
+    if (isRfLocked()) return;
+    if (interval !== null) return;
+    activeHoldStops.add(stop);
+    send({ type: 'button_event', action: 'press', ...collarCommandPayload() });
+    onFire();
+    interval = setInterval(onFire, 250);
+  }
+  function stop() {
+    if (interval) {
+      clearInterval(interval);
+      interval = null;
+      activeHoldStops.delete(stop);
+      send({ type: 'button_event', action: 'release', ...collarCommandPayload() });
+    }
+  }
+  btn.addEventListener('mousedown', start);
+  btn.addEventListener('touchstart', start, { passive: false });
+  btn.addEventListener('mouseup', stop);
+  btn.addEventListener('mouseleave', stop);
+  btn.addEventListener('touchend', stop);
+  btn.addEventListener('touchcancel', stop);
+}
+
+const MODE_EMOJI = { shock: '\u26A1', vibrate: '\u3030\uFE0F', beep: '\uD83D\uDD14', pause: '\u23F8\uFE0F' };
+
+function describePresetStep(step) {
+  const icon = MODE_EMOJI[step.mode] || step.mode;
+  const dur = step.duration_ms >= 1000 ? `${(step.duration_ms / 1000).toFixed(1)}s` : `${step.duration_ms}ms`;
+  if (step.mode === 'pause' || step.mode === 'beep') return `${icon} ${dur}`;
+  return `${icon} ${dur} @ ${step.intensity}%`;
+}
+
+// --- Init ---
+renderAppVersion();
+connect();
+
+// Tooltip: click/tap to show, click/tap elsewhere to hide
+document.addEventListener('click', (e) => {
+  const wrapper = document.getElementById('clients-wrapper');
+  if (!wrapper) return;
+  if (wrapper.contains(e.target)) {
+    wrapper.classList.toggle('show-tooltip');
+  } else {
+    wrapper.classList.remove('show-tooltip');
+  }
+});
+</script>
+
+<button class="stop-fab" id="stop-all-btn" onclick="stopAllRf()">STOP</button>
+
+</body>
+</html>

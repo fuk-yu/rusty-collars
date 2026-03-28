@@ -1,0 +1,15 @@
+/*
+!/pcb-prompt.txt
+!/.gitignore
+!/*.kicad_pcb
+!/*.kicad_pro
+!/*.kicad_sch
+!/*.kicad_dru
+!/*.kicad_sym
+!/*.kicad_wks
+!/fp-lib-table
+!/sym-lib-table
+!/*.pretty/
+!/*.pretty/**
+!/*.3dshapes/
+!/*.3dshapes/**

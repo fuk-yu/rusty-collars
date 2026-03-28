@@ -1,0 +1,15 @@
+[build]
+target = "riscv32imac-esp-espidf"
+
+[target.riscv32imac-esp-espidf]
+linker = "ldproxy"
+runner = "espflash flash --monitor"
+rustflags = ["--cfg", "espidf_time64"]
+
+[unstable]
+build-std = ["std", "panic_abort"]
+
+[env]
+MCU = "esp32c6"
+# Don't use fromenv for C6 - let esp-idf-sys manage RISC-V tools
+# (the libxml2/esp-clang issue is Xtensa-specific)
