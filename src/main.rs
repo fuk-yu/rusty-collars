@@ -17,6 +17,7 @@ mod ota;
 mod rf;
 mod server;
 mod storage;
+mod time_sync;
 #[cfg(not(esp32p4))]
 mod wifi;
 
@@ -97,6 +98,13 @@ fn main() -> Result<()> {
         &device_settings,
     )?;
     log_heap("after network");
+
+    let _time_sync = if network.supports_time_sync() {
+        time_sync::maybe_start(&device_settings)?
+    } else {
+        info!("Skipping NTP time sync because this target has no network stack");
+        None
+    };
 
     let tx_led = Arc::new(Mutex::new(led::Led::new(tx_led_pin)?));
     let rx_led = Arc::new(Mutex::new(led::Led::new(rx_led_pin)?));

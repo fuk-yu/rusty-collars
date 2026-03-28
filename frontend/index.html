@@ -86,6 +86,17 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 .track-header .fold-arrow.open { transform: rotate(90deg); }
 .track-body { display: none; }
 .track-body.open { display: block; }
+.preset-preview { margin-top: 12px; background: var(--surface); border-radius: 6px; padding: 10px; }
+.preset-preview summary { cursor: pointer; font-weight: bold; }
+.preset-preview .status { font-size: 0.85em; color: var(--text2); margin-top: 8px; }
+.preset-preview .status.error { color: var(--warn); }
+.preset-preview .summary { font-size: 0.8em; color: var(--text2); margin-top: 8px; }
+.preset-preview-table-wrap { margin-top: 10px; overflow-x: auto; }
+.preset-preview-table { width: 100%; border-collapse: collapse; font-size: 0.78em; }
+.preset-preview-table th, .preset-preview-table td { text-align: left; padding: 6px 8px; border-bottom: 1px solid rgba(255,255,255,0.08); vertical-align: top; }
+.preset-preview-table th { color: var(--text2); font-weight: 600; white-space: nowrap; }
+.preset-preview-table td { white-space: nowrap; }
+.settings-disabled { opacity: 0.45; }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .debug-toolbar { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; align-items: center; }
 .debug-events { max-height: 60vh; overflow-y: auto; display: flex; flex-direction: column; gap: 1px; }
@@ -224,6 +235,16 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
     </div>
   </div>
   <div class="card">
+    <h3>Time Sync</h3>
+    <div class="form-row" style="margin-top:8px">
+      <label style="min-width:auto"><input type="checkbox" id="settings-ntp-enabled" onchange="updateNtpSettingsUi()"> Sync clock with NTP</label>
+    </div>
+    <div class="form-row" id="settings-ntp-server-row">
+      <label>NTP Server</label>
+      <input type="text" id="settings-ntp-server" placeholder="pool.ntp.org">
+    </div>
+  </div>
+  <div class="card">
     <div class="form-row">
       <button class="btn-add" onclick="saveDeviceSettings()">Save Settings</button>
       <button class="btn-del" onclick="rebootDevice()">Reboot</button>
@@ -284,9 +305,15 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
     <h2 id="editor-title">New Preset</h2>
     <div class="form-row">
       <label>Name</label>
-      <input id="editor-name" placeholder="Preset name">
+      <input id="editor-name" placeholder="Preset name" oninput="handleEditorNameInput(this.value)">
     </div>
     <div id="editor-tracks"></div>
+    <details class="preset-preview" id="editor-preview-panel">
+      <summary>Preview</summary>
+      <div class="status" id="editor-preview-status">Preview unavailable until the editor is initialized.</div>
+      <div class="summary" id="editor-preview-summary"></div>
+      <div class="preset-preview-table-wrap" id="editor-preview-events"></div>
+    </details>
     <button onclick="editorAddTrack()" style="margin-top:8px">+ Add Track</button>
     <div class="editor-actions">
       <button onclick="closeEditor()">Cancel</button>
@@ -303,6 +330,9 @@ let rfDebug = { listening: false, events: [] };
 let rfDebugWanted = false;
 let editorData = null; // working copy during editing
 let editorOriginalName = null;
+let editorPreview = { loading: false, error: null, data: null };
+let editorPreviewNonce = 0;
+let editorPreviewTimer = null;
 const WS_RECONNECT_BASE_DELAY_MS = 500;
 const WS_RECONNECT_MAX_DELAY_MS = 5000;
 const RF_LOCKOUT_TICK_MS = 100;
@@ -316,6 +346,7 @@ const WS_PING_TIMEOUT_MS = 3000;
 const PRESET_DURATION_MIN_MS = 500;
 const PRESET_DURATION_MAX_MS = 10000;
 const PRESET_DURATION_STEP_MS = 500;
+const PRESET_PREVIEW_DEBOUNCE_MS = 150;
 let statusConnected = false;
 let statusText = 'Connecting...';
 let wsPingMs = null;
@@ -484,6 +515,9 @@ function connect() {
     setConnectionStatus(true, 'Ping ...');
     startPingTimer();
     loadDeviceSettings();
+    if (editorData) {
+      schedulePresetPreviewRefresh();
+    }
     if (rfDebugWanted) {
       send({ type: 'start_rf_debug' });
     }
@@ -532,6 +566,9 @@ function connect() {
         state.device_settings = msg.settings;
         handleDeviceSettings(msg);
         renderDebug();
+        break;
+      case 'preset_preview':
+        handlePresetPreview(msg);
         break;
       case 'error':
         alert(msg.message);
@@ -847,6 +884,144 @@ function reorderPresets(fromIndex, toIndex) {
 
 // --- Preset Editor ---
 
+function clearEditorPreviewTimer() {
+  if (editorPreviewTimer !== null) {
+    clearTimeout(editorPreviewTimer);
+    editorPreviewTimer = null;
+  }
+}
+
+function resetEditorPreview() {
+  clearEditorPreviewTimer();
+  editorPreview = { loading: false, error: null, data: null };
+  editorPreviewNonce = 0;
+  renderEditorPreview();
+}
+
+function handleEditorNameInput(value) {
+  if (!editorData) return;
+  editorData.name = value;
+  schedulePresetPreviewRefresh();
+}
+
+function schedulePresetPreviewRefresh() {
+  if (!editorData) return;
+  clearEditorPreviewTimer();
+  editorPreview.loading = true;
+  renderEditorPreview();
+  editorPreviewTimer = setTimeout(requestPresetPreview, PRESET_PREVIEW_DEBOUNCE_MS);
+}
+
+function requestPresetPreview() {
+  editorPreviewTimer = null;
+  if (!editorData) return;
+
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    editorPreview.loading = false;
+    editorPreview.error = 'Preview unavailable while disconnected.';
+    renderEditorPreview();
+    return;
+  }
+
+  const previewPreset = JSON.parse(JSON.stringify(editorData));
+  const nameField = document.getElementById('editor-name');
+  previewPreset.name = (nameField ? nameField.value : previewPreset.name).trim();
+  if (!previewPreset.name) {
+    previewPreset.name = '__preview__';
+  }
+  normalizeEditorPresetDurations(previewPreset);
+
+  const nonce = ++editorPreviewNonce;
+  ws.send(JSON.stringify({ type: 'preview_preset', nonce, preset: previewPreset }));
+}
+
+function handlePresetPreview(msg) {
+  if (!editorData || msg.nonce !== editorPreviewNonce) return;
+  editorPreview.loading = false;
+  editorPreview.error = msg.error || null;
+  editorPreview.data = msg.preview || null;
+  renderEditorPreview();
+}
+
+function formatPreviewTimeMs(timeMs) {
+  if (timeMs % 1000 === 0) {
+    return (timeMs / 1000) + 's';
+  }
+  if (timeMs >= 1000) {
+    return (timeMs / 1000).toFixed(3) + 's';
+  }
+  return timeMs + 'ms';
+}
+
+function groupHexPairs(rawHex) {
+  const pairs = rawHex.match(/.{1,2}/g);
+  return pairs ? pairs.join(' ') : rawHex;
+}
+
+function renderEditorPreview() {
+  const statusEl = document.getElementById('editor-preview-status');
+  const summaryEl = document.getElementById('editor-preview-summary');
+  const eventsEl = document.getElementById('editor-preview-events');
+  if (!statusEl || !summaryEl || !eventsEl) return;
+
+  statusEl.classList.remove('error');
+  summaryEl.textContent = '';
+  eventsEl.innerHTML = '';
+
+  if (!editorData) {
+    statusEl.textContent = 'Preview unavailable until the editor is initialized.';
+    return;
+  }
+
+  if (editorPreview.loading) {
+    statusEl.textContent = 'Updating preview...';
+  } else if (editorPreview.error) {
+    statusEl.textContent = editorPreview.error;
+    statusEl.classList.add('error');
+  } else if (!editorPreview.data) {
+    statusEl.textContent = 'No preview data available yet.';
+  } else {
+    const preview = editorPreview.data;
+    const delayedEvents = preview.events.filter(event => event.actual_time_ms !== event.requested_time_ms).length;
+    statusEl.textContent = 'Preview reflects the exact serialized RF transmit order.';
+    summaryEl.textContent =
+      `${preview.events.length} RF messages over ${formatPreviewTimeMs(preview.total_duration_ms)}. ` +
+      `${delayedEvents} delayed by single-transmitter serialization.`;
+    eventsEl.innerHTML = `
+      <table class="preset-preview-table">
+        <thead>
+          <tr>
+            <th>At</th>
+            <th>Requested</th>
+            <th>Delay</th>
+            <th>Track</th>
+            <th>Step</th>
+            <th>Collar</th>
+            <th>Mode</th>
+            <th>Level</th>
+            <th>Frame</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${preview.events.map(event => `
+            <tr>
+              <td class="mono">${formatPreviewTimeMs(event.actual_time_ms)}</td>
+              <td class="mono">${formatPreviewTimeMs(event.requested_time_ms)}</td>
+              <td class="mono">${event.actual_time_ms - event.requested_time_ms}ms</td>
+              <td>${event.track_index + 1}</td>
+              <td>${event.step_index + 1}</td>
+              <td>${esc(event.collar_name)} <span style="color:var(--text2)">CH${event.channel + 1}</span></td>
+              <td>${esc(describeMode(event.mode))}</td>
+              <td>${event.intensity}</td>
+              <td class="mono">${groupHexPairs(event.raw_hex)}</td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    `;
+  }
+}
+
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
 }
@@ -874,12 +1049,14 @@ function setPresetStepIntensity(trackIndex, stepIndex, value) {
   const intensity = parseInt(value, 10);
   editorData.tracks[trackIndex].steps[stepIndex].intensity = intensity;
   document.getElementById(`preset-val-${trackIndex}-${stepIndex}`).textContent = intensity;
+  schedulePresetPreviewRefresh();
 }
 
 function setPresetStepDuration(trackIndex, stepIndex, value) {
   const durationMs = normalizePresetEditorDurationMs(Math.round(parseFloat(value) * 1000));
   editorData.tracks[trackIndex].steps[stepIndex].duration_ms = durationMs;
   document.getElementById(`preset-duration-${trackIndex}-${stepIndex}`).textContent = formatPresetEditorDurationMs(durationMs);
+  schedulePresetPreviewRefresh();
 }
 
 function openPresetEditor(name) {
@@ -894,6 +1071,7 @@ function openPresetEditor(name) {
     editorOriginalName = null;
     document.getElementById('editor-title').textContent = 'New Preset';
   }
+  resetEditorPreview();
   normalizeEditorPresetDurations(editorData);
   document.getElementById('editor-name').value = editorData.name;
   renderEditorTracks();
@@ -904,6 +1082,7 @@ function closeEditor() {
   document.getElementById('editor-overlay').classList.remove('active');
   editorData = null;
   editorOriginalName = null;
+  resetEditorPreview();
 }
 
 let editorOpenTrack = 0; // which track is unfolded
@@ -922,7 +1101,7 @@ function renderEditorTracks() {
       <div class="track-header" onclick="editorOpenTrack=${ti};renderEditorTracks()">
         <span>
           <span class="fold-arrow ${isOpen ? 'open' : ''}">&#9654;</span>
-          Track: <select onclick="event.stopPropagation()" onchange="editorData.tracks[${ti}].collar_name=this.value">${collarOpts}</select>
+          Track: <select onclick="event.stopPropagation()" onchange="editorData.tracks[${ti}].collar_name=this.value;schedulePresetPreviewRefresh()">${collarOpts}</select>
           <span style="color:var(--text2);font-size:0.85em">(${track.steps.length} steps)</span>
         </span>
         <button class="btn-del" onclick="event.stopPropagation();editorData.tracks.splice(${ti},1);if(editorOpenTrack>=editorData.tracks.length)editorOpenTrack=Math.max(0,editorData.tracks.length-1);renderEditorTracks()">X</button>
@@ -1007,6 +1186,8 @@ function renderEditorTracks() {
     body.appendChild(addBtn);
     container.appendChild(div);
   });
+  schedulePresetPreviewRefresh();
+  renderEditorPreview();
 }
 
 function moveStep(trackIndex, stepIndex, direction) {
@@ -1210,6 +1391,14 @@ async function runStressTest() {
 
 function loadDeviceSettings() { send({ type: 'get_device_settings' }); }
 
+function updateNtpSettingsUi() {
+  const enabled = document.getElementById('settings-ntp-enabled').checked;
+  const row = document.getElementById('settings-ntp-server-row');
+  const input = document.getElementById('settings-ntp-server');
+  row.classList.toggle('settings-disabled', !enabled);
+  input.disabled = !enabled;
+}
+
 function rebootDevice() {
   if (!confirm('Reboot the device? Active connections will be dropped.')) return;
   send({ type: 'reboot' });
@@ -1226,6 +1415,12 @@ function saveDeviceSettings() {
     return;
   }
   const maxClients = parseInt(document.getElementById('settings-max-clients').value) || 8;
+  const ntpEnabled = document.getElementById('settings-ntp-enabled').checked;
+  const ntpServer = document.getElementById('settings-ntp-server').value.trim();
+  if (ntpEnabled && !ntpServer) {
+    alert('NTP server is required when time sync is enabled');
+    return;
+  }
   send({
     type: 'save_device_settings',
     settings: {
@@ -1238,6 +1433,8 @@ function saveDeviceSettings() {
       ap_enabled: document.getElementById('settings-ap-enabled').checked,
       ap_password: document.getElementById('settings-ap-password').value,
       max_clients: maxClients,
+      ntp_enabled: ntpEnabled,
+      ntp_server: ntpServer,
     }
   });
 }
@@ -1253,6 +1450,9 @@ function handleDeviceSettings(msg) {
   document.getElementById('settings-ap-enabled').checked = s.ap_enabled;
   document.getElementById('settings-ap-password').value = s.ap_password || '';
   document.getElementById('settings-max-clients').value = s.max_clients || 8;
+  document.getElementById('settings-ntp-enabled').checked = s.ntp_enabled !== false;
+  document.getElementById('settings-ntp-server').value = s.ntp_server || 'pool.ntp.org';
+  updateNtpSettingsUi();
   const status = document.getElementById('settings-status');
   if (msg.reboot_required) {
     status.textContent = 'Saved. Reboot required to apply changes.';
@@ -1450,6 +1650,11 @@ function setupHoldButton(btn, onFire) {
 }
 
 const MODE_EMOJI = { shock: '\u26A1', vibrate: '\u3030\uFE0F', beep: '\uD83D\uDD14', pause: '\u23F8\uFE0F' };
+const MODE_LABEL = { shock: 'Shock', vibrate: 'Vibrate', beep: 'Beep', pause: 'Pause' };
+
+function describeMode(mode) {
+  return MODE_LABEL[mode] || mode;
+}
 
 function describePresetStep(step) {
   const icon = MODE_EMOJI[step.mode] || step.mode;

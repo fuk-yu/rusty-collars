@@ -25,6 +25,11 @@ pub struct DeviceSettings {
     // Server
     #[serde(default = "default_max_clients")]
     pub max_clients: u8,
+    // Time sync
+    #[serde(default = "default_true")]
+    pub ntp_enabled: bool,
+    #[serde(default = "default_ntp_server")]
+    pub ntp_server: String,
 }
 
 fn default_true() -> bool {
@@ -35,6 +40,9 @@ fn default_ap_password() -> String {
 }
 fn default_max_clients() -> u8 {
     8
+}
+fn default_ntp_server() -> String {
+    "pool.ntp.org".to_string()
 }
 fn default_rx_led_pin() -> u8 {
     DeviceSettings::default_pins().1
@@ -71,6 +79,8 @@ impl Default for DeviceSettings {
             ap_enabled: true,
             ap_password: "rfcollars".to_string(),
             max_clients: 8,
+            ntp_enabled: true,
+            ntp_server: default_ntp_server(),
         }
     }
 }
@@ -228,6 +238,10 @@ pub enum ClientMessage {
     SaveDeviceSettings {
         settings: DeviceSettings,
     },
+    PreviewPreset {
+        nonce: u32,
+        preset: Preset,
+    },
     ReorderPresets {
         names: Vec<String>,
     },
@@ -269,6 +283,11 @@ pub enum ServerMessage<'a> {
         settings: DeviceSettings,
         reboot_required: bool,
     },
+    PresetPreview {
+        nonce: u32,
+        preview: Option<PresetPreview>,
+        error: Option<String>,
+    },
     Error {
         message: String,
     },
@@ -278,6 +297,27 @@ pub enum ServerMessage<'a> {
 pub struct ExportData {
     pub collars: Vec<Collar>,
     pub presets: Vec<Preset>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PresetPreview {
+    pub total_duration_ms: u64,
+    pub events: Vec<PresetPreviewEvent>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PresetPreviewEvent {
+    pub requested_time_ms: u64,
+    pub actual_time_ms: u64,
+    pub track_index: usize,
+    pub step_index: usize,
+    pub collar_name: String,
+    pub collar_id: u16,
+    pub channel: u8,
+    pub mode: CommandMode,
+    pub mode_byte: u8,
+    pub intensity: u8,
+    pub raw_hex: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -32,6 +32,15 @@ impl NetworkHandle {
             wifi.poll();
         }
     }
+
+    pub fn supports_time_sync(&self) -> bool {
+        match self {
+            #[cfg(not(esp32p4))]
+            Self::Wifi(_) => true,
+            Self::Eth => true,
+            Self::None => false,
+        }
+    }
 }
 
 // --- ESP32: WiFi + OpenETH for QEMU ---

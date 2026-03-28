@@ -855,6 +855,16 @@ async fn handle_text_message<W: picoserve::io::Write>(
         }
 
         ClientMessage::SaveDeviceSettings { settings } => {
+            let mut settings = settings;
+            settings.ntp_server = settings.ntp_server.trim().to_string();
+            if settings.ntp_enabled && settings.ntp_server.is_empty() {
+                send_error(
+                    tx,
+                    "NTP server cannot be empty when time sync is enabled".to_string(),
+                )
+                .await?;
+                return Ok(());
+            }
             info!("Saving device settings...");
             let settings_to_save = settings.clone();
             let changed = {
@@ -873,6 +883,32 @@ async fn handle_text_message<W: picoserve::io::Write>(
             })
             .unwrap();
             tx.send_text(&msg).await?;
+        }
+
+        ClientMessage::PreviewPreset { nonce, mut preset } => {
+            preset.normalize();
+            let collars = ctx.domain.lock().unwrap().collars.clone();
+            let msg = match validation::validate_preset(&preset, &collars) {
+                Ok(()) => match scheduling::preview_preset(&preset, &collars) {
+                    Ok(preview) => ServerMessage::PresetPreview {
+                        nonce,
+                        preview: Some(preview),
+                        error: None,
+                    },
+                    Err(err) => ServerMessage::PresetPreview {
+                        nonce,
+                        preview: None,
+                        error: Some(err.to_string()),
+                    },
+                },
+                Err(err) => ServerMessage::PresetPreview {
+                    nonce,
+                    preview: None,
+                    error: Some(err.to_string()),
+                },
+            };
+            let json = serde_json::to_string(&msg).unwrap();
+            tx.send_text(&json).await?;
         }
 
         ClientMessage::ReorderPresets { names } => {
