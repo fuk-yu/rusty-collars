@@ -1,0 +1,18 @@
+@import "tailwindcss";
+
+@theme {
+  --color-panel: #161b22;
+  --color-panel-strong: #1f2630;
+  --color-surface: rgba(255, 255, 255, 0.03);
+  --color-border-subtle: rgba(255, 255, 255, 0.08);
+}
+
+/* Range slider styling */
+input[type="range"] {
+  accent-color: #3b82f6;
+}
+
+/* Drag-and-drop feedback */
+.drag-over {
+  border-top: 2px solid #3b82f6 !important;
+}
