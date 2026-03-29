@@ -12,7 +12,7 @@ import {
 import { renderDashboard, loadDashboardData, bindDashboardEvents } from "./pages/dashboard.js";
 import { renderDevicePage, loadDeviceData, bindDeviceEvents } from "./pages/device.js";
 import { renderInvitePage, bindInviteEvents } from "./pages/invite.js";
-import { handlePresetPreview } from "./components/preset-editor.js";
+import { handlePreviewResult } from "./components/preset-editor.js";
 import type { WsServerMessage, DeviceSnapshot } from "../shared/types.js";
 import { esc } from "./utils.js";
 
@@ -183,7 +183,7 @@ function handleWsMessage(msg: WsServerMessage): void {
       showBanner("info", msg.message);
       break;
     case "preset_preview":
-      handlePresetPreview(msg.nonce, msg.preview, msg.error);
+      handlePreviewResult(msg.nonce, msg.preview, msg.error);
       break;
   }
 }

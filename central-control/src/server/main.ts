@@ -280,6 +280,7 @@ route("GET", "/api/invitations", async (req, res) => {
   const invitations = db.listInvitationsByUser(user.id);
   const result: ApiInvitation[] = invitations.map((inv) => ({
     id: inv.id,
+    name: inv.name,
     token: inv.token,
     fromLogin: db.getUserById(inv.fromUserId)?.login ?? "unknown",
     toLogin: inv.toUserId ? (db.getUserById(inv.toUserId)?.login ?? "unknown") : null,
@@ -291,8 +292,12 @@ route("GET", "/api/invitations", async (req, res) => {
 
 route("POST", "/api/invitations", async (req, res) => {
   const user = requireAuth(req);
+  const body = await readJsonBody<{ name: string }>(req);
+  if (!body.name?.trim()) throw new HttpError(400, "Invitation name is required");
+
   const invitation = {
     id: auth.generateId(),
+    name: body.name.trim(),
     token: auth.generateToken(),
     fromUserId: user.id,
     toUserId: null,
@@ -302,7 +307,7 @@ route("POST", "/api/invitations", async (req, res) => {
   };
   db.putInvitation(invitation);
 
-  const host = req.headers.host ?? "localhost:3001";
+  const host = req.headers.host ?? "localhost:8099";
   const protocol = req.headers["x-forwarded-proto"] === "https" ? "https" : "http";
   const link = `${protocol}://${host}/#/invite/${invitation.token}`;
 
@@ -316,6 +321,7 @@ route("GET", "/api/invitations/:token", async (req, res, params) => {
   const fromUser = db.getUserById(invitation.fromUserId);
   json(res, 200, {
     id: invitation.id,
+    name: invitation.name,
     fromLogin: fromUser?.login ?? "unknown",
     status: invitation.status,
   });

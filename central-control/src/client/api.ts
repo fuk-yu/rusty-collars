@@ -69,8 +69,8 @@ export const deleteDevice = (uuid: string) =>
 // Invitations
 export const listInvitations = () => request<ApiInvitation[]>("GET", "/api/invitations");
 
-export const createInvitation = () =>
-  request<{ invitation: ApiInvitation; link: string }>("POST", "/api/invitations");
+export const createInvitation = (name: string) =>
+  request<{ invitation: ApiInvitation; link: string }>("POST", "/api/invitations", { name });
 
 export const getInvitation = (token: string) =>
   request<{ id: string; fromLogin: string; status: string }>("GET", `/api/invitations/${token}`);

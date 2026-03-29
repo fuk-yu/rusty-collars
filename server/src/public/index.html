@@ -90,66 +90,11 @@
       .grid-5, .grid-4, .grid-2, .stats, .preset-layout { grid-template-columns: 1fr; }
     }
 
-    /* Preset editor overlay */
-    .editor-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 100; overflow-y: auto; }
-    .editor-overlay.active { display: flex; justify-content: center; padding: 20px; }
-    .editor-box { background: var(--bg); border: 1px solid var(--border); border-radius: 18px; padding: 1.25rem; width: 100%; max-width: 650px; max-height: 90vh; overflow-y: auto; box-shadow: 0 24px 60px rgba(0,0,0,0.5); }
-    .editor-box h2 { margin: 0 0 1rem; font-size: 1.1rem; }
-    .editor-track { background: var(--panel); border-radius: 14px; padding: 0.75rem; margin-bottom: 0.75rem; }
-    .editor-track-header { cursor: pointer; user-select: none; display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; }
-    .editor-track-header .fold-arrow { transition: transform 0.15s; display: inline-block; }
-    .editor-track-header .fold-arrow.open { transform: rotate(90deg); }
-    .editor-track-body { display: none; margin-top: 0.5rem; }
-    .editor-track-body.open { display: block; }
-    .editor-step { display: flex; flex-direction: column; gap: 0.5rem; margin-bottom: 0.5rem; padding: 0.6rem; border-radius: 10px; background: rgba(255,255,255,0.03); border: 1px solid var(--border); }
-    .editor-step-header { display: flex; gap: 0.5rem; align-items: center; }
-    .editor-step-header select { flex: 1; min-width: 0; }
-    .editor-slider { display: flex; align-items: center; gap: 0.5rem; }
-    .editor-slider .slider-label { width: 5rem; flex-shrink: 0; font-size: 0.84rem; color: var(--muted); }
-    .editor-slider input[type=range] { flex: 1; accent-color: var(--accent); }
-    .editor-slider .slider-val { min-width: 2.5rem; text-align: right; font-size: 0.84rem; color: var(--muted); }
-    .editor-actions { display: flex; gap: 0.6rem; margin-top: 1rem; justify-content: flex-end; }
-    .editor-preview { margin-top: 1rem; background: var(--panel); border-radius: 14px; padding: 0.75rem; }
-    .editor-preview summary { cursor: pointer; font-weight: 600; font-size: 0.92rem; }
-    .editor-preview .ep-status { font-size: 0.84rem; color: var(--muted); margin-top: 0.5rem; }
-    .editor-preview .ep-status.ep-error { color: var(--danger); }
-    .editor-preview .ep-summary { font-size: 0.8rem; color: var(--muted); margin-top: 0.5rem; }
-    .ep-timeline { margin-top: 0.5rem; }
-    .ep-timeline-scale { display: flex; justify-content: space-between; margin-bottom: 3px; font-size: 0.72rem; color: var(--muted); font-family: "IBM Plex Mono", monospace; }
-    .ep-timeline-bar { display: flex; border-radius: 6px; overflow: hidden; background: rgba(255,255,255,0.04); border: 1px solid var(--border); height: 20px; }
-    .ep-seg { flex: none; height: 100%; border: none; border-radius: 0; cursor: pointer; opacity: 0.85; min-width: 1px; padding: 0; }
-    .ep-seg:hover, .ep-seg.active { opacity: 1; outline: none; }
-    .ep-table { width: 100%; border-collapse: collapse; font-size: 0.72rem; margin-top: 0.5rem; }
-    .ep-table th, .ep-table td { text-align: left; padding: 3px 5px; border-bottom: 1px solid var(--border); vertical-align: top; white-space: nowrap; }
-    .ep-table th { color: var(--muted); font-weight: 600; }
-    .ep-table .hex { white-space: normal; word-break: break-all; }
-    .ep-row { transition: background-color 0.12s; }
-    .ep-row.active { background: rgba(255,255,255,0.08); }
+    /* Preset editor styles are now injected by ui-shared/preset-editor.ts */
   </style>
 </head>
 <body>
   <div id="app"></div>
-  <div class="editor-overlay" id="editor-overlay">
-    <div class="editor-box">
-      <h2 id="editor-title">New Preset</h2>
-      <div style="margin-bottom:0.75rem">
-        <label><span>Name</span><input type="text" id="editor-name" placeholder="Preset name"></label>
-      </div>
-      <div id="editor-tracks"></div>
-      <button id="editor-add-track" style="margin-top:0.5rem">+ Add Track</button>
-      <details class="editor-preview" id="editor-preview-panel">
-        <summary>Preview</summary>
-        <div class="ep-status" id="ep-status">No preview yet.</div>
-        <div class="ep-summary" id="ep-summary"></div>
-        <div class="ep-timeline" id="ep-timeline"></div>
-        <div id="ep-events"></div>
-      </details>
-      <div class="editor-actions">
-        <button id="editor-cancel">Cancel</button>
-        <button class="accent" id="editor-save">Save</button>
-      </div>
-    </div>
-  </div>
   <script type="module" src="/client.js"></script>
 </body>
 </html>

@@ -115,9 +115,17 @@ function renderInvitations(invitations: ApiInvitation[], newLink: string | null)
     <div class="bg-gray-900 border border-gray-800 rounded-2xl p-6 shadow-xl">
       <div class="flex items-center justify-between mb-4">
         <h2 class="text-lg font-semibold">Invitations</h2>
-        <button id="create-invite-btn" class="bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold rounded-lg px-4 py-2 transition-colors">
+        <button id="show-invite-form-btn" class="bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold rounded-lg px-4 py-2 transition-colors">
           Create Invitation
         </button>
+      </div>
+      <div id="invite-form" class="hidden mb-4">
+        <form id="new-invite-form" class="flex gap-2">
+          <input type="text" name="invite-name" placeholder="Invitation name (e.g. for Alice)" required
+            class="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-gray-100 text-sm focus:outline-none focus:border-blue-500">
+          <button type="submit" class="bg-green-600 hover:bg-green-700 text-white text-sm font-semibold rounded-lg px-4 py-2 transition-colors">Send</button>
+          <button type="button" id="cancel-invite-form" class="bg-gray-700 hover:bg-gray-600 text-white text-sm rounded-lg px-4 py-2 transition-colors">Cancel</button>
+        </form>
       </div>
 
       ${newLink ? `
@@ -135,7 +143,10 @@ function renderInvitations(invitations: ApiInvitation[], newLink: string | null)
             : sent.map((i) => `
               <div class="bg-gray-800 border border-gray-700 rounded-lg p-3 mb-2">
                 <div class="flex justify-between items-center text-sm">
-                  <span>${i.toLogin ? esc(i.toLogin) : "pending..."}</span>
+                  <div>
+                    <span class="font-medium">${esc(i.name)}</span>
+                    <span class="text-xs text-gray-500 ml-2">${i.toLogin ? esc(i.toLogin) : "pending..."}</span>
+                  </div>
                   <div class="flex items-center gap-2">
                     <span class="text-xs ${i.status === "accepted" ? "text-green-400" : i.status === "rejected" ? "text-red-400" : "text-yellow-400"}">${esc(i.status)}</span>
                     ${i.status === "pending" ? `<button class="cancel-invite-btn text-xs text-red-400 hover:text-red-300" data-invite-token="${esc(i.token)}">Cancel</button>` : ""}
@@ -150,7 +161,10 @@ function renderInvitations(invitations: ApiInvitation[], newLink: string | null)
             : received.map((i) => `
               <div class="bg-gray-800 border border-gray-700 rounded-lg p-3 mb-2">
                 <div class="flex justify-between text-sm">
-                  <span>from ${esc(i.fromLogin)}</span>
+                  <div>
+                    <span class="font-medium">${esc(i.name)}</span>
+                    <span class="text-xs text-gray-500 ml-2">from ${esc(i.fromLogin)}</span>
+                  </div>
                   <span class="text-xs ${i.status === "accepted" ? "text-green-400" : i.status === "rejected" ? "text-red-400" : "text-yellow-400"}">${esc(i.status)}</span>
                 </div>
               </div>`).join("")}
@@ -230,9 +244,22 @@ export function bindDashboardEvents(root: HTMLElement): void {
     root.querySelector("#new-device-info")?.classList.add("hidden");
   });
 
-  root.querySelector("#create-invite-btn")?.addEventListener("click", async () => {
+  root.querySelector("#show-invite-form-btn")?.addEventListener("click", () => {
+    root.querySelector("#invite-form")?.classList.toggle("hidden");
+  });
+
+  root.querySelector("#cancel-invite-form")?.addEventListener("click", () => {
+    root.querySelector("#invite-form")?.classList.add("hidden");
+  });
+
+  const newInviteForm = root.querySelector("#new-invite-form") as HTMLFormElement | null;
+  newInviteForm?.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const formData = new FormData(newInviteForm);
+    const name = (formData.get("invite-name") as string).trim();
     try {
-      const result = await api.createInvitation();
+      const result = await api.createInvitation(name);
+      root.querySelector("#invite-form")?.classList.add("hidden");
       dashData.newInviteLink = result.link;
       await loadDashboardData();
       triggerRender();

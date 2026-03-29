@@ -27,6 +27,7 @@ export interface Device {
 
 export interface Invitation {
   id: string;
+  name: string;
   token: string;
   fromUserId: string;
   toUserId: string | null;
@@ -147,6 +148,7 @@ export interface ApiDevice {
 
 export interface ApiInvitation {
   id: string;
+  name: string;
   token: string;
   fromLogin: string;
   toLogin: string | null;

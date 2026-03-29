@@ -5,22 +5,19 @@ import type {
   CommandMode,
   EventLogEntry,
   Preset,
-  PresetPreview,
-  PresetPreviewEvent,
   PresetPreviewMessage,
   SnapshotMessage,
   UiIncomingMessage,
   UiOutgoingMessage,
 } from "./protocol.js";
 
-// --- Constants ---
-
-const PRESET_DURATION_MIN_MS = 500;
-const PRESET_DURATION_MAX_MS = 10000;
-const PRESET_DURATION_STEP_MS = 500;
-const PRESET_PREVIEW_DEBOUNCE_MS = 150;
-const TRACK_COLORS = ["#4ecca3", "#ffc947", "#e94560", "#6fa8ff", "#ff8fab", "#b8de6f"];
-const MODE_EMOJI: Record<string, string> = { shock: "\u26A1", vibrate: "\u3030\uFE0F", beep: "\uD83D\uDD14", pause: "\u23F8\uFE0F" };
+import {
+  openEditor,
+  closeEditor,
+  handlePreviewResult,
+  type PresetEditorConfig,
+  type EditorPreset,
+} from "../../ui-shared/preset-editor.js";
 
 // --- State ---
 
@@ -41,14 +38,6 @@ const state: FormState = {
 let socket: WebSocket | null = null;
 let snapshot: SnapshotMessage = { type: "snapshot", server_started_at_ms: Date.now(), boards: [] };
 
-// Editor state
-let editorData: Preset | null = null;
-let editorOriginalName: string | null = null;
-let editorOpenTrack = -1;
-let editorPreview: { loading: boolean; error: string | null; data: PresetPreview | null } = { loading: false, error: null, data: null };
-let editorPreviewNonce = 0;
-let editorPreviewTimer: ReturnType<typeof setTimeout> | null = null;
-
 // --- Boot ---
 
 const appRoot = document.getElementById("app");
@@ -57,7 +46,6 @@ const root: HTMLElement = appRoot;
 
 connect();
 render();
-bindEditorEvents();
 
 // --- WebSocket ---
 
@@ -94,8 +82,8 @@ root.addEventListener("click", (event) => {
     case "run-preset": runPreset(el.dataset.presetName ?? state.quickAction.presetName); break;
     case "stop-preset": sendBoardCommand({ type: "stop_preset" }); break;
     case "ping-board": pingBoard(); break;
-    case "new-preset": openPresetEditor(null); break;
-    case "edit-preset": openPresetEditor(el.dataset.presetName ?? ""); break;
+    case "new-preset": openPresetEditorWrapper(null); break;
+    case "edit-preset": openPresetEditorWrapper(el.dataset.presetName ?? ""); break;
     case "delete-preset": deletePreset(el.dataset.presetName ?? ""); break;
     case "move-preset-up": reorderPreset(el.dataset.presetName ?? "", -1); break;
     case "move-preset-down": reorderPreset(el.dataset.presetName ?? "", 1); break;
@@ -133,7 +121,7 @@ function handleMessage(message: UiOutgoingMessage): void {
       render();
       break;
     case "preset_preview":
-      handlePresetPreview(message);
+      handlePreviewResult(message.nonce, message.preview, message.error);
       break;
     case "ui_error":
       state.banner = { kind: "error", text: message.message };
@@ -286,358 +274,35 @@ function renderEventLog(board: BoardSnapshot): string {
 }
 
 // =============================================================================
-// Preset Visual Editor (persistent overlay, direct DOM manipulation)
+// Preset Editor — uses shared ui-shared/preset-editor.ts
 // =============================================================================
 
-function bindEditorEvents(): void {
-  const nameInput = document.getElementById("editor-name") as HTMLInputElement;
-  nameInput.addEventListener("input", () => { if (editorData) { editorData.name = nameInput.value; schedulePreviewRefresh(); } });
-  document.getElementById("editor-add-track")!.addEventListener("click", editorAddTrack);
-  document.getElementById("editor-cancel")!.addEventListener("click", closePresetEditor);
-  document.getElementById("editor-save")!.addEventListener("click", editorSave);
-}
-
-function openPresetEditor(nameOrNull: string | null): void {
-  const board = selectedBoard();
-  if (nameOrNull) {
-    const preset = board?.state?.presets.find((p) => p.name === nameOrNull);
-    if (!preset) { showError(`Unknown preset: ${nameOrNull}`); return; }
-    editorData = JSON.parse(JSON.stringify(preset)) as Preset;
-    editorOriginalName = preset.name;
-    document.getElementById("editor-title")!.textContent = "Edit Preset";
-  } else {
-    editorData = { name: "", tracks: [] };
-    editorOriginalName = null;
-    document.getElementById("editor-title")!.textContent = "New Preset";
-  }
-  editorOpenTrack = -1;
-  resetPreview();
-  normalizeEditorDurations(editorData);
-  (document.getElementById("editor-name") as HTMLInputElement).value = editorData.name;
-  renderEditorTracks();
-  document.getElementById("editor-overlay")!.classList.add("active");
-}
-
-function closePresetEditor(): void {
-  document.getElementById("editor-overlay")!.classList.remove("active");
-  editorData = null;
-  editorOriginalName = null;
-  editorOpenTrack = -1;
-  resetPreview();
-}
-
-function editorSave(): void {
-  if (!editorData) return;
-  editorData.name = (document.getElementById("editor-name") as HTMLInputElement).value.trim();
-  if (!editorData.name) { alert("Preset name required"); return; }
-  normalizeEditorDurations(editorData);
-  sendBoardCommand({ type: "save_preset", original_name: editorOriginalName, preset: editorData });
-  closePresetEditor();
-}
-
-function editorAddTrack(): void {
-  if (!editorData) return;
-  const board = selectedBoard();
-  const defaultCollar = board?.state?.collars[0]?.name ?? "";
-  editorData.tracks.push({ collar_name: defaultCollar, steps: [] });
-  editorOpenTrack = editorData.tracks.length - 1;
-  renderEditorTracks();
-}
-
-function editorRemoveTrack(ti: number): void {
-  if (!editorData) return;
-  editorData.tracks.splice(ti, 1);
-  if (editorOpenTrack === ti) editorOpenTrack = -1;
-  else if (editorOpenTrack > ti) editorOpenTrack--;
-  if (editorOpenTrack >= editorData.tracks.length) editorOpenTrack = editorData.tracks.length - 1;
-  renderEditorTracks();
-}
-
-function editorToggleTrack(ti: number): void {
-  editorOpenTrack = editorOpenTrack === ti ? -1 : ti;
-  renderEditorTracks();
-}
-
-// --- Track/Step Rendering ---
-
-function renderEditorTracks(): void {
-  if (!editorData) return;
+function openPresetEditorWrapper(nameOrNull: string | null): void {
   const board = selectedBoard();
   const collars: Collar[] = board?.state?.collars ?? [];
-  const container = document.getElementById("editor-tracks")!;
-  container.innerHTML = "";
+  let preset: Preset | null = null;
+  let originalName: string | null = null;
 
-  editorData.tracks.forEach((track, ti) => {
-    const isOpen = ti === editorOpenTrack;
-    const div = document.createElement("div");
-    div.className = "editor-track";
-
-    const collarOpts = collars.map((c) =>
-      `<option value="${esc(c.name)}" ${c.name === track.collar_name ? "selected" : ""}>${esc(c.name)}</option>`
-    ).join("");
-
-    div.innerHTML = `
-      <div class="editor-track-header" data-track-toggle="${ti}">
-        <span><span class="fold-arrow ${isOpen ? "open" : ""}">&#9654;</span>
-          Track: <select data-track-collar="${ti}" onclick="event.stopPropagation()">${collarOpts}</select>
-          <span style="color:var(--muted);font-size:0.84rem">(${track.steps.length} steps)</span>
-        </span>
-        <button class="danger" data-track-remove="${ti}" style="padding:0.3rem 0.6rem">X</button>
-      </div>
-      <div class="editor-track-body ${isOpen ? "open" : ""}" id="editor-track-body-${ti}"></div>`;
-
-    // Track header click → toggle fold
-    div.querySelector("[data-track-toggle]")!.addEventListener("click", (e) => {
-      if ((e.target as HTMLElement).closest("select, button")) return;
-      editorToggleTrack(ti);
-    });
-    div.querySelector("[data-track-collar]")!.addEventListener("change", (e) => {
-      track.collar_name = (e.target as HTMLSelectElement).value;
-      schedulePreviewRefresh();
-    });
-    div.querySelector("[data-track-remove]")!.addEventListener("click", (e) => {
-      e.stopPropagation();
-      editorRemoveTrack(ti);
-    });
-
-    const body = div.querySelector(".editor-track-body")!;
-    track.steps.forEach((step, si) => {
-      body.appendChild(renderEditorStep(track, ti, si));
-    });
-
-    const addBtn = document.createElement("button");
-    addBtn.textContent = "+ Step";
-    addBtn.style.marginTop = "0.4rem";
-    addBtn.addEventListener("click", () => {
-      track.steps.push({ mode: "vibrate", intensity: 30, duration_ms: 1000 });
-      renderEditorTracks();
-    });
-    body.appendChild(addBtn);
-    container.appendChild(div);
-  });
-
-  schedulePreviewRefresh();
-}
-
-function renderEditorStep(track: { steps: Preset["tracks"][0]["steps"] }, ti: number, si: number): HTMLElement {
-  const step = track.steps[si]!;
-  const noLevel = step.mode === "pause" || step.mode === "beep";
-  const durSec = (normalizeDuration(step.duration_ms) / 1000).toFixed(1);
-
-  const div = document.createElement("div");
-  div.className = "editor-step";
-  div.draggable = true;
-
-  div.innerHTML = `
-    <div class="editor-step-header">
-      <select data-step-mode>
-        ${(["shock", "vibrate", "beep", "pause"] as const).map((m) => `<option value="${m}" ${step.mode === m ? "selected" : ""}>${m[0]!.toUpperCase() + m.slice(1)}</option>`).join("")}
-      </select>
-      <button class="danger" data-step-remove style="padding:0.3rem 0.6rem">X</button>
-    </div>
-    ${noLevel ? "" : `<div class="editor-slider">
-      <span class="slider-label">Level</span>
-      <input type="range" min="0" max="99" value="${step.intensity}" data-step-intensity>
-      <span class="slider-val" data-intensity-val>${step.intensity}</span>
-    </div>`}
-    <div class="editor-slider">
-      <span class="slider-label">Duration</span>
-      <input type="range" min="${PRESET_DURATION_MIN_MS / 1000}" max="${PRESET_DURATION_MAX_MS / 1000}" step="${PRESET_DURATION_STEP_MS / 1000}" value="${durSec}" data-step-duration>
-      <span class="slider-val" data-duration-val>${formatEditorDuration(step.duration_ms)}</span>
-    </div>`;
-
-  // Mode change
-  div.querySelector("[data-step-mode]")!.addEventListener("change", (e) => {
-    step.mode = (e.target as HTMLSelectElement).value as Preset["tracks"][0]["steps"][0]["mode"];
-    renderEditorTracks();
-  });
-
-  // Remove step
-  div.querySelector("[data-step-remove]")!.addEventListener("click", () => {
-    track.steps.splice(si, 1);
-    renderEditorTracks();
-  });
-
-  // Intensity slider
-  const intSlider = div.querySelector("[data-step-intensity]") as HTMLInputElement | null;
-  if (intSlider) {
-    intSlider.addEventListener("input", () => {
-      step.intensity = parseInt(intSlider.value, 10);
-      div.querySelector("[data-intensity-val]")!.textContent = String(step.intensity);
-      schedulePreviewRefresh();
-    });
+  if (nameOrNull) {
+    preset = board?.state?.presets.find((p) => p.name === nameOrNull) ?? null;
+    if (!preset) { showError(`Unknown preset: ${nameOrNull}`); return; }
+    originalName = preset.name;
   }
 
-  // Duration slider
-  const durSlider = div.querySelector("[data-step-duration]") as HTMLInputElement;
-  durSlider.addEventListener("input", () => {
-    step.duration_ms = normalizeDuration(Math.round(parseFloat(durSlider.value) * 1000));
-    div.querySelector("[data-duration-val]")!.textContent = formatEditorDuration(step.duration_ms);
-    schedulePreviewRefresh();
-  });
+  const cfg: PresetEditorConfig = {
+    collars,
+    onSave: async (origName, edited) => {
+      sendBoardCommand({ type: "save_preset", original_name: origName, preset: edited as Preset });
+    },
+    onPreview: (nonce, previewPreset) => {
+      sendBoardCommand({ type: "preview_preset", nonce, preset: previewPreset as Preset });
+    },
+  };
 
-  // Drag-and-drop reordering within same track
-  div.addEventListener("dragstart", (e) => {
-    e.dataTransfer!.setData("text/plain", `step:${ti}:${si}`);
-    div.style.opacity = "0.5";
-    e.stopPropagation();
-  });
-  div.addEventListener("dragend", () => { div.style.opacity = ""; });
-  div.addEventListener("dragover", (e) => { e.preventDefault(); div.style.borderTop = "2px solid var(--accent)"; e.stopPropagation(); });
-  div.addEventListener("dragleave", () => { div.style.borderTop = ""; });
-  div.addEventListener("drop", (e) => {
-    e.preventDefault(); e.stopPropagation();
-    div.style.borderTop = "";
-    const data = e.dataTransfer!.getData("text/plain");
-    if (!data.startsWith("step:")) return;
-    const parts = data.split(":");
-    const fromTrack = parseInt(parts[1] ?? "", 10);
-    const fromStep = parseInt(parts[2] ?? "", 10);
-    if (fromTrack === ti && fromStep !== si) {
-      const steps = editorData!.tracks[ti]!.steps;
-      const [moved] = steps.splice(fromStep, 1);
-      steps.splice(fromStep < si ? si - 1 : si, 0, moved!);
-      renderEditorTracks();
-    }
-  });
-
-  return div;
+  openEditor(cfg, preset as EditorPreset | null, originalName);
 }
 
-// --- Preview ---
-
-function resetPreview(): void {
-  if (editorPreviewTimer !== null) clearTimeout(editorPreviewTimer);
-  editorPreviewTimer = null;
-  editorPreview = { loading: false, error: null, data: null };
-  editorPreviewNonce = 0;
-  renderEditorPreview();
-}
-
-function schedulePreviewRefresh(): void {
-  if (!editorData) return;
-  if (editorPreviewTimer !== null) clearTimeout(editorPreviewTimer);
-  editorPreview.loading = true;
-  renderEditorPreview();
-  editorPreviewTimer = setTimeout(requestPreview, PRESET_PREVIEW_DEBOUNCE_MS);
-}
-
-function requestPreview(): void {
-  editorPreviewTimer = null;
-  if (!editorData) return;
-  if (!socket || socket.readyState !== WebSocket.OPEN) {
-    editorPreview = { loading: false, error: "Preview unavailable while disconnected.", data: null };
-    renderEditorPreview();
-    return;
-  }
-  const clone = JSON.parse(JSON.stringify(editorData)) as Preset;
-  clone.name = (document.getElementById("editor-name") as HTMLInputElement).value.trim() || "__preview__";
-  normalizeEditorDurations(clone);
-  const nonce = ++editorPreviewNonce;
-  sendBoardCommand({ type: "preview_preset", nonce, preset: clone });
-}
-
-function handlePresetPreview(msg: PresetPreviewMessage): void {
-  if (!editorData || msg.nonce !== editorPreviewNonce) return;
-  editorPreview = { loading: false, error: msg.error, data: msg.preview };
-  renderEditorPreview();
-}
-
-function renderEditorPreview(): void {
-  const statusEl = document.getElementById("ep-status");
-  const summaryEl = document.getElementById("ep-summary");
-  const timelineEl = document.getElementById("ep-timeline");
-  const eventsEl = document.getElementById("ep-events");
-  if (!statusEl || !summaryEl || !timelineEl || !eventsEl) return;
-
-  statusEl.classList.remove("ep-error");
-  summaryEl.textContent = "";
-  timelineEl.innerHTML = "";
-  eventsEl.innerHTML = "";
-
-  if (!editorData) { statusEl.textContent = "No preview yet."; return; }
-  if (editorPreview.loading) { statusEl.textContent = "Updating preview..."; return; }
-  if (editorPreview.error) { statusEl.textContent = editorPreview.error; statusEl.classList.add("ep-error"); return; }
-  if (!editorPreview.data) { statusEl.textContent = "No preview data available yet."; return; }
-
-  const preview = editorPreview.data;
-  const endUs = Math.max(preview.total_duration_us, ...preview.events.map((e) => e.actual_time_us + e.transmit_duration_us));
-  const delayed = preview.events.filter((e) => e.actual_time_us !== e.requested_time_us).length;
-  statusEl.textContent = "Preview reflects the exact serialized RF transmit order.";
-  summaryEl.textContent = `${preview.events.length} RF messages. Span ${fmtUs(preview.total_duration_us)}; timeline ${fmtUs(endUs)}. ${delayed} delayed.`;
-
-  // Timeline bar — sequential flex segments, no overlap
-  if (preview.events.length > 0) {
-    const sorted = preview.events.map((e, i) => ({ e, i })).sort((a, b) => a.e.actual_time_us - b.e.actual_time_us);
-    const segCap = endUs / sorted.length / 8;
-    let segs = "";
-    let cursor = 0;
-    for (const { e: ev, i } of sorted) {
-      const gap = ev.actual_time_us - cursor;
-      if (gap > 0 && endUs > 0) segs += `<div style="flex:${gap}"></div>`;
-      const sf = Math.max(1, Math.min(ev.transmit_duration_us, segCap));
-      segs += `<button type="button" class="ep-seg" data-pi="${i}" title="${esc(segTitle(ev))}" style="flex:${sf};min-width:1px;background:${TRACK_COLORS[ev.track_index % TRACK_COLORS.length]}"></button>`;
-      cursor = ev.actual_time_us + ev.transmit_duration_us;
-    }
-    if (cursor < endUs) segs += `<div style="flex:${endUs - cursor}"></div>`;
-    timelineEl.innerHTML = `<div class="ep-timeline-scale"><span>0ms</span><span>${fmtUs(endUs)}</span></div><div class="ep-timeline-bar">${segs}</div>`;
-  }
-
-  // Event table
-  eventsEl.innerHTML = `<table class="ep-table"><thead><tr>
-    <th>At</th><th title="Requested">&#x1F3AF;</th><th>Delay</th><th title="Track">&#x1F9F5;</th><th title="Step">&#x1F43E;</th>
-    <th title="TX">&#x23F1;</th><th>Collar</th><th title="Mode">&#x1F39B;</th><th title="Level">&#x1F4F6;</th><th>Frame</th>
-  </tr></thead><tbody>${preview.events.map((ev, i) => `<tr class="ep-row" data-pi="${i}" title="${esc(segTitle(ev))}">
-    <td style="font-family:monospace">${fmtUs(ev.actual_time_us)}</td>
-    <td style="font-family:monospace">${fmtUs(ev.requested_time_us)}</td>
-    <td style="font-family:monospace">${fmtUs(ev.actual_time_us - ev.requested_time_us)}</td>
-    <td style="color:${TRACK_COLORS[ev.track_index % TRACK_COLORS.length]}">${ev.track_index + 1}</td>
-    <td>${ev.step_index + 1}</td>
-    <td style="font-family:monospace">${fmtUs(ev.transmit_duration_us)}</td>
-    <td>${esc(ev.collar_name)}</td>
-    <td>${MODE_EMOJI[ev.mode] ?? ev.mode}</td>
-    <td>${ev.intensity}</td>
-    <td class="hex" style="font-family:monospace">${ev.raw_hex}</td>
-  </tr>`).join("")}</tbody></table>`;
-
-  // Cross-highlight timeline segments ↔ table rows
-  const all = [...timelineEl.querySelectorAll("[data-pi]"), ...eventsEl.querySelectorAll("[data-pi]")];
-  for (const el of all) {
-    const pi = (el as HTMLElement).dataset.pi!;
-    el.addEventListener("mouseenter", () => { for (const x of all) (x as HTMLElement).classList.toggle("active", (x as HTMLElement).dataset.pi === pi); });
-    el.addEventListener("mouseleave", () => { for (const x of all) (x as HTMLElement).classList.remove("active"); });
-  }
-}
-
-// --- Duration helpers ---
-
-function normalizeDuration(ms: number): number {
-  const v = Number.isFinite(ms) ? ms : PRESET_DURATION_MIN_MS;
-  return Math.round(Math.min(PRESET_DURATION_MAX_MS, Math.max(PRESET_DURATION_MIN_MS, v)) / PRESET_DURATION_STEP_MS) * PRESET_DURATION_STEP_MS;
-}
-
-function formatEditorDuration(ms: number): string {
-  const s = normalizeDuration(ms) / 1000;
-  return Number.isInteger(s) ? `${s}s` : `${s.toFixed(1)}s`;
-}
-
-function normalizeEditorDurations(preset: Preset): void {
-  for (const track of preset.tracks) for (const step of track.steps) step.duration_ms = normalizeDuration(step.duration_ms);
-}
-
-function fmtUs(us: number): string {
-  const ms = Math.round(us / 1000);
-  if (ms === 0) return "0ms";
-  if (ms % 1000 === 0) return `${ms / 1000}s`;
-  if (ms >= 1000) return `${(ms / 1000).toFixed(3)}s`;
-  return `${ms}ms`;
-}
-
-function segTitle(ev: PresetPreviewEvent): string {
-  return `Track ${ev.track_index + 1}, step ${ev.step_index + 1}, ${ev.collar_name}, ${ev.mode}, level ${ev.intensity}, at ${fmtUs(ev.actual_time_us)}, requested ${fmtUs(ev.requested_time_us)}, TX ${fmtUs(ev.transmit_duration_us)}`;
-}
-
-// --- Collar/preset actions (unchanged logic) ---
+// --- Collar/preset actions ---
 
 function saveCollar(): void {
   const collarId = parseCollarId(state.collarEditor.collarId.trim());
@@ -721,8 +386,6 @@ function describeEvent(entry: EventLogEntry): string {
   switch (entry.event) {
     case "action": return `${entry.collar_name} ${entry.mode} ${entry.duration_ms}ms${entry.intensity == null ? "" : ` @ ${entry.intensity}%`}`;
     case "preset_run": return `Preset ${entry.preset_name} started`;
-    case "ntp_sync": return `NTP sync via ${entry.server}`;
-    case "remote_control_connection": return entry.connected ? `Remote connected ${entry.url}` : `Remote disconnected${entry.reason ? `: ${entry.reason}` : ""}`;
     default: return JSON.stringify(entry);
   }
 }

@@ -11,8 +11,7 @@
     "forceConsistentCasingInFileNames": true,
     "skipLibCheck": true,
     "resolveJsonModule": true,
-    "rootDir": "src",
     "types": ["node"]
   },
-  "include": ["src/**/*.ts", "scripts/**/*.mjs"]
+  "include": ["src/**/*.ts", "../ui-shared/**/*.ts", "scripts/**/*.mjs"]
 }
