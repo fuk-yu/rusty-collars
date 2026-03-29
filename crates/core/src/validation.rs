@@ -32,6 +32,13 @@ pub fn validate_collars(collars: &[Collar]) -> Result<()> {
 }
 
 pub fn validate_preset(preset: &Preset, collars: &[Collar]) -> Result<()> {
+    validate_preset_and_schedule_events(preset, collars).map(|_| ())
+}
+
+pub fn validate_preset_and_schedule_events(
+    preset: &Preset,
+    collars: &[Collar],
+) -> Result<Vec<scheduling::PresetEvent>> {
     if preset.name.trim().is_empty() {
         return Err(anyhow!("Preset name cannot be empty"));
     }
@@ -98,7 +105,7 @@ pub fn validate_preset(preset: &Preset, collars: &[Collar]) -> Result<()> {
         }
     }
 
-    scheduling::schedule_preset_events(preset, collars)?;
+    let events = scheduling::schedule_preset_events(preset, collars)?;
 
     if runnable_steps == 0 {
         return Err(anyhow!(
@@ -107,7 +114,7 @@ pub fn validate_preset(preset: &Preset, collars: &[Collar]) -> Result<()> {
         ));
     }
 
-    Ok(())
+    Ok(events)
 }
 
 pub fn validate_presets(presets: &[Preset], collars: &[Collar]) -> Result<()> {
@@ -215,6 +222,44 @@ mod tests {
             vec![track("Rex", vec![step(PresetStepMode::Vibrate, 50, 1000)])],
         );
         assert!(validate_preset(&p, &collars).is_ok());
+    }
+
+    #[test]
+    fn validate_preset_and_schedule_events_returns_schedule() {
+        let collars = vec![collar("Rex", 0x1234, 0)];
+        let p = preset(
+            "test",
+            vec![track("Rex", vec![step(PresetStepMode::Vibrate, 50, 1000)])],
+        );
+
+        let events = validate_preset_and_schedule_events(&p, &collars).unwrap();
+        assert!(!events.is_empty());
+        let expected = scheduling::schedule_preset_events(&p, &collars).unwrap();
+        let actual_fields: Vec<(u64, u16, u8, u8, u8)> = events
+            .iter()
+            .map(|event| {
+                (
+                    event.time_us,
+                    event.collar_id,
+                    event.channel,
+                    event.mode_byte,
+                    event.intensity,
+                )
+            })
+            .collect();
+        let expected_fields: Vec<(u64, u16, u8, u8, u8)> = expected
+            .iter()
+            .map(|event| {
+                (
+                    event.time_us,
+                    event.collar_id,
+                    event.channel,
+                    event.mode_byte,
+                    event.intensity,
+                )
+            })
+            .collect();
+        assert_eq!(actual_fields, expected_fields);
     }
 
     #[test]

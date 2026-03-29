@@ -226,7 +226,7 @@ fn connect_qemu_eth(
         let ip_info = blocking_eth.eth().netif().get_ip_info()?;
         info!("OpenETH connected! IP: {}", ip_info.ip);
 
-        std::mem::forget(blocking_eth);
+        Box::leak(Box::new(blocking_eth));
         return Ok(NetworkHandle::Eth);
     }
 

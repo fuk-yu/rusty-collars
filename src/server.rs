@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -15,7 +15,11 @@ use crate::ota;
 use crate::async_runtime::{AsyncIoSocket, AsyncIoTimer};
 use crate::build_info::APP_VERSION;
 use crate::led::Led;
-use crate::protocol::{self, DeviceSettings, *};
+use crate::protocol::{
+    ClientMessage, Collar, CommandMode, DeviceSettings, EventLogEntry, EventLogEntryKind,
+    EventSource, ExportData, Preset, RemoteControlStatus, RfDebugFrame, ServerMessage,
+    MAX_INTENSITY,
+};
 use crate::rf::{RfReceiver, RfTransmitter};
 use crate::scheduling::{self, PresetEvent};
 use crate::storage::Storage;
@@ -90,7 +94,7 @@ pub struct DomainState {
     pub presets: Vec<Preset>,
     pub preset_name: Option<String>,
     pub rf_lockout_until_ms: u64,
-    pub rf_debug_events: Vec<RfDebugFrame>,
+    pub rf_debug_events: VecDeque<RfDebugFrame>,
     pub event_log_events: Vec<EventLogEntry>,
     pub remote_control_status: RemoteControlStatus,
 }
@@ -143,7 +147,7 @@ impl AppCtx {
                 presets,
                 preset_name: None,
                 rf_lockout_until_ms: 0,
-                rf_debug_events: Vec::new(),
+                rf_debug_events: VecDeque::new(),
                 event_log_events: Vec::new(),
                 remote_control_status,
             })),
@@ -175,6 +179,7 @@ impl AppCtx {
     pub(crate) fn state_json(&self) -> Arc<str> {
         let d = self.domain.lock().unwrap();
         let msg = ServerMessage::State {
+            device_id: &d.device_settings.device_id,
             app_version: APP_VERSION,
             server_uptime_s: uptime_seconds(),
             collars: &d.collars,
@@ -388,6 +393,46 @@ fn stop_active_preset(d: &mut DomainState, preset_run_id: &AtomicU32) {
     }
 }
 
+fn rollback_failed_preset_start(ctx: &AppCtx, preset_name: &str, run_id: u32) {
+    let rolled_back = {
+        let mut d = ctx.domain.lock().unwrap();
+        if ctx.preset_run_id.load(Ordering::SeqCst) != run_id
+            || d.preset_name.as_deref() != Some(preset_name)
+        {
+            false
+        } else {
+            let previous_run_id = ctx.preset_run_id.fetch_sub(1, Ordering::SeqCst);
+            assert_eq!(
+                previous_run_id, run_id,
+                "preset run id changed while rolling back failed preset start"
+            );
+            d.preset_name = None;
+            true
+        }
+    };
+
+    if rolled_back {
+        ctx.broadcast_state();
+    }
+}
+
+struct TxLedGuard<'a> {
+    tx_led: &'a Mutex<Led>,
+}
+
+impl<'a> TxLedGuard<'a> {
+    fn new(tx_led: &'a Mutex<Led>) -> Self {
+        tx_led.lock().unwrap().set(true);
+        Self { tx_led }
+    }
+}
+
+impl Drop for TxLedGuard<'_> {
+    fn drop(&mut self) {
+        self.tx_led.lock().unwrap().set(false);
+    }
+}
+
 fn rf_send_with_led(
     rf: &Mutex<RfTransmitter>,
     tx_led: &Mutex<Led>,
@@ -396,12 +441,11 @@ fn rf_send_with_led(
     mode_byte: u8,
     intensity: u8,
 ) -> Result<()> {
-    tx_led.lock().unwrap().set(true);
+    let _tx_led_guard = TxLedGuard::new(tx_led);
     let result = rf
         .lock()
         .unwrap()
         .send_command(collar_id, channel, mode_byte, intensity);
-    tx_led.lock().unwrap().set(false);
     result.map_err(Into::into)
 }
 
@@ -746,11 +790,10 @@ fn resolve_collar_command(
     if lockout > 0 {
         return Err("Transmissions locked after STOP".to_string());
     }
-    if mode.has_intensity() && intensity > protocol::MAX_INTENSITY {
+    if mode.has_intensity() && intensity > MAX_INTENSITY {
         return Err(format!(
             "Intensity {} exceeds max {}",
-            intensity,
-            protocol::MAX_INTENSITY
+            intensity, MAX_INTENSITY
         ));
     }
 
@@ -1198,13 +1241,32 @@ pub(crate) fn process_control_message(
                 else {
                     return Err(format!("Unknown preset: {name}"));
                 };
-                validation::validate_preset(&preset, &d.collars).map_err(|err| err.to_string())?;
-                let events = scheduling::schedule_preset_events(&preset, &d.collars)
+                let events = validation::validate_preset_and_schedule_events(&preset, &d.collars)
                     .map_err(|err| err.to_string())?;
                 let run_id = ctx.preset_run_id.fetch_add(1, Ordering::SeqCst) + 1;
                 d.preset_name = Some(name.clone());
                 (preset.name.clone(), events, run_id)
             };
+
+            let ctx2 = ctx.clone();
+            let preset_name_for_thread = preset_name.clone();
+            std::thread::Builder::new()
+                .name("preset".into())
+                .stack_size(32768)
+                .spawn(move || {
+                    run_preset(&preset_name_for_thread, events, &ctx2, run_id);
+                    if ctx2.preset_run_id.load(Ordering::SeqCst) == run_id {
+                        let mut d = ctx2.domain.lock().unwrap();
+                        if d.preset_name.as_deref() == Some(preset_name_for_thread.as_str()) {
+                            d.preset_name = None;
+                        }
+                    }
+                    ctx2.broadcast_state();
+                })
+                .map_err(|err| {
+                    rollback_failed_preset_start(ctx, &preset_name, run_id);
+                    format!("Failed to spawn preset thread: {err}")
+                })?;
 
             ctx.record_event(
                 source,
@@ -1212,22 +1274,6 @@ pub(crate) fn process_control_message(
                     preset_name: preset_name.clone(),
                 },
             );
-
-            let ctx2 = ctx.clone();
-            std::thread::Builder::new()
-                .name("preset".into())
-                .stack_size(32768)
-                .spawn(move || {
-                    run_preset(&preset_name, events, &ctx2, run_id);
-                    if ctx2.preset_run_id.load(Ordering::SeqCst) == run_id {
-                        let mut d = ctx2.domain.lock().unwrap();
-                        if d.preset_name.as_deref() == Some(preset_name.as_str()) {
-                            d.preset_name = None;
-                        }
-                    }
-                    ctx2.broadcast_state();
-                })
-                .ok();
 
             ctx.broadcast_state();
             Ok(Vec::new())
@@ -1282,6 +1328,12 @@ pub(crate) fn process_control_message(
         ClientMessage::SaveDeviceSettings { mut settings } => {
             if origin == MessageOrigin::RemoteControl {
                 return Err("save_device_settings is not available over remote control".to_string());
+            }
+
+            // Preserve device_id from current settings if the incoming payload
+            // doesn't provide one (e.g. older frontend that doesn't know about it).
+            if settings.device_id.is_empty() {
+                settings.device_id = ctx.domain.lock().unwrap().device_settings.device_id.clone();
             }
 
             settings.ntp_server = settings.ntp_server.trim().to_string();
@@ -1347,10 +1399,6 @@ pub(crate) fn process_control_message(
         }
 
         ClientMessage::PreviewPreset { nonce, mut preset } => {
-            if origin == MessageOrigin::RemoteControl {
-                return Err("preview_preset is not available over remote control".to_string());
-            }
-
             preset.normalize();
             let collars = ctx.domain.lock().unwrap().collars.clone();
             let msg = match validation::validate_preset(&preset, &collars) {
@@ -1604,10 +1652,9 @@ fn ensure_rf_debug_worker(ctx: &AppCtx) {
                         worker_ctx.rx_led.lock().unwrap().set(true);
                         {
                             let mut d = worker_ctx.domain.lock().unwrap();
-                            d.rf_debug_events.push(event.clone());
+                            d.rf_debug_events.push_back(event.clone());
                             if d.rf_debug_events.len() > MAX_RF_DEBUG_EVENTS {
-                                let excess = d.rf_debug_events.len() - MAX_RF_DEBUG_EVENTS;
-                                d.rf_debug_events.drain(0..excess);
+                                d.rf_debug_events.pop_front();
                             }
                         }
                         let json =
@@ -1640,6 +1687,8 @@ fn ensure_rf_debug_worker(ctx: &AppCtx) {
 pub fn run_server(ctx: AppCtx) -> Result<()> {
     let max_clients = ctx.domain.lock().unwrap().device_settings.max_clients as u32;
     let app_ctx = ctx;
+    let base_app = make_app();
+    let shared_app = base_app.shared();
 
     let config = picoserve::Config::new(picoserve::Timeouts {
         start_read_request: picoserve::time::Duration::from_secs(5),
@@ -1683,7 +1732,7 @@ pub fn run_server(ctx: AppCtx) -> Result<()> {
                     };
 
                     ex.spawn(async move {
-                        let app = make_app().with_state(conn_state);
+                        let app = shared_app.with_state(conn_state);
                         let socket = AsyncIoSocket(stream);
                         let mut http_buf = vec![0u8; HTTP_BUF_SIZE];
                         let server = picoserve::Server::custom(

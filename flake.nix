@@ -25,6 +25,7 @@
           python3Packages.pip
           python3Packages.virtualenv
           git
+          nodejs
           pkg-config
           openssl.dev
 

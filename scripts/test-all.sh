@@ -2,6 +2,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 project_dir="$PWD"
+. "$project_dir/scripts/prepare-toolchain-env.sh"
 
 source "$project_dir/scripts/target-info.sh"
 
@@ -32,7 +33,7 @@ fi
 # --- ESP32 build ---
 echo "[2/4] ESP32 build..."
 activate_target "$project_dir" esp32
-if cargo +esp clean 2>/dev/null && cargo +esp build --release 2>&1 | tail -1 | grep -q "Finished"; then
+if cargo +esp build --release 2>&1 | tail -1 | grep -q "Finished"; then
     result "esp32 build" pass
 
     # --- ESP32 QEMU integration tests ---
@@ -52,7 +53,7 @@ echo "[4/4] ESP32-C6 build..."
 activate_target "$project_dir" esp32c6
 # C6 needs RISC-V tools. Check if riscv32-esp-elf-gcc is available.
 if command -v riscv32-esp-elf-gcc &>/dev/null || find "$project_dir/.embuild" -name "riscv32-esp-elf-gcc" 2>/dev/null | grep -q .; then
-    if ESP_IDF_TOOLS_INSTALL_DIR=fromenv cargo clean 2>/dev/null && ESP_IDF_TOOLS_INSTALL_DIR=fromenv cargo build --release 2>&1 | tail -1 | grep -q "Finished"; then
+    if ESP_IDF_TOOLS_INSTALL_DIR=fromenv cargo build --release 2>&1 | tail -1 | grep -q "Finished"; then
         result "esp32c6 build" pass
     else
         result "esp32c6 build" fail

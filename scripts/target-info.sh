@@ -13,6 +13,9 @@
 #   TARGET_CHIP   - e.g. "esp32p4" (espflash chip name)
 #   ESPFLASH_EXTRA_ARGS - extra args for espflash (e.g. "--no-stub" for P4)
 
+target_info_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+. "$target_info_dir/esp-idf-env.sh"
+
 SUPPORTED_TARGETS="esp32 esp32c6 esp32p4"
 
 resolve_target() {
@@ -77,58 +80,145 @@ EOF
 
   # Ensure ESP-IDF checkout matches the version in Cargo.toml
   _ensure_idf_version "$project_dir"
+  _invalidate_build_cache "$project_dir"
 }
 
 _ensure_idf_version() {
   local project_dir="$1"
   local wanted
+  local idf_dir
+  local current
+  local needs_bootstrap=false
+
   wanted=$(grep 'esp_idf_version' "$project_dir/Cargo.toml" | sed 's/.*"\(.*\)"/\1/')
   [ -n "$wanted" ] || return 0
 
-  # Find the ESP-IDF checkout (directory name may not match the actual tag)
-  local idf_dir
-  for idf_dir in "$project_dir"/.embuild/espressif/esp-idf/v5.*; do
-    [ -d "$idf_dir/.git" ] || continue
-    local current
-    current=$(git -C "$idf_dir" describe --tags --exact-match 2>/dev/null || git -C "$idf_dir" describe --tags 2>/dev/null || echo "unknown")
+  idf_dir="$(requested_idf_checkout_path "$project_dir" "$wanted")"
+  if [ ! -d "$idf_dir/.git" ]; then
+    needs_bootstrap=true
+  else
+    current="$(git -C "$idf_dir" describe --tags --exact-match 2>/dev/null || true)"
     if [ "$current" != "$wanted" ]; then
-      echo "ESP-IDF: $current -> $wanted"
-      git -C "$idf_dir" fetch --tags --quiet
-      git -C "$idf_dir" checkout "$wanted" --quiet
-      git -C "$idf_dir" submodule update --init --recursive --quiet
+      needs_bootstrap=true
     fi
+  fi
+
+  if [ "$needs_bootstrap" = true ]; then
+    echo "ESP-IDF $wanted not found, running bootstrap-toolchain.sh..."
+    "$project_dir/scripts/bootstrap-toolchain.sh"
+  fi
+}
+
+_target_compiler_path() {
+  local project_dir="${1:?_target_compiler_path requires project dir}"
+  local bindir
+  local compiler
+
+  case "$TARGET_NAME" in
+    esp32)
+      bindir="$(find_toolchain_bin_dir "$project_dir" xtensa-esp-elf)"
+      compiler="$bindir/xtensa-esp-elf-gcc"
+      ;;
+    esp32c6|esp32p4)
+      bindir="$(find_toolchain_bin_dir "$project_dir" riscv32-esp-elf)"
+      compiler="$bindir/riscv32-esp-elf-gcc"
+      ;;
+    *)
+      compiler=""
+      ;;
+  esac
+
+  if [ -x "$compiler" ]; then
+    printf '%s\n' "$compiler"
+  else
+    printf '%s\n' ""
+  fi
+}
+
+_build_env_fingerprint() {
+  local project_dir="${1:?_build_env_fingerprint requires project dir}"
+  local wanted
+  local python_env
+  local compiler
+  local compiler_version
+
+  wanted="$(load_requested_idf_version "$project_dir")"
+  python_env="$(find_requested_idf_python_env "$project_dir" "$wanted")"
+  compiler="$(_target_compiler_path "$project_dir")"
+  compiler_version=""
+  if [ -n "$compiler" ]; then
+    compiler_version="$("$compiler" --version | head -1)"
+  fi
+
+  cat <<EOF
+target=$TARGET_NAME
+triple=$TARGET_TRIPLE
+idf=$wanted
+python_env=$python_env
+compiler=$compiler
+compiler_version=$compiler_version
+EOF
+}
+
+_invalidate_build_cache() {
+  local project_dir="${1:?_invalidate_build_cache requires project dir}"
+  local target_dir="$project_dir/target/$TARGET_TRIPLE"
+  local fingerprint_path="$target_dir/.esp-build-fingerprint"
+  local fingerprint_tmp
+
+  fingerprint_tmp="$(mktemp)"
+  _build_env_fingerprint "$project_dir" > "$fingerprint_tmp"
+
+  if [ -f "$fingerprint_path" ] && cmp -s "$fingerprint_tmp" "$fingerprint_path"; then
+    rm -f "$fingerprint_tmp"
     return 0
-  done
+  fi
+
+  echo "Build env changed for $TARGET_NAME; cleaning target/$TARGET_TRIPLE"
+  cargo clean --target "$TARGET_TRIPLE"
+  mkdir -p "$target_dir"
+  mv "$fingerprint_tmp" "$fingerprint_path"
 }
 
 find_idf_python() {
   local project_dir="${1:?find_idf_python requires project dir}"
+  local wanted
+  local python_env
 
   if [ -n "${IDF_PYTHON_ENV_PATH:-}" ] && [ -x "${IDF_PYTHON_ENV_PATH}/bin/python" ]; then
     printf '%s\n' "${IDF_PYTHON_ENV_PATH}/bin/python"
     return 0
   fi
 
-  local python_bin
-  while IFS= read -r python_bin; do
-    printf '%s\n' "$python_bin"
+  wanted="$(load_requested_idf_version "$project_dir")"
+  python_env="$(find_requested_idf_python_env "$project_dir" "$wanted")"
+  if [ -x "$python_env/bin/python" ]; then
+    printf '%s\n' "$python_env/bin/python"
     return 0
-  done < <(find "$project_dir/.embuild/espressif/python_env" -type f -path '*/bin/python' | sort)
+  fi
 
-  echo "Missing ESP-IDF python under $project_dir/.embuild/espressif/python_env" >&2
+  echo "Missing ESP-IDF python for $wanted under $project_dir/.embuild/espressif/python_env" >&2
   return 1
 }
 
 find_esptool_py() {
   local project_dir="${1:?find_esptool_py requires project dir}"
-  local esptool
+  local wanted
+  local python_env
 
-  while IFS= read -r esptool; do
-    printf '%s\n' "$esptool"
+  if [ -n "${IDF_PYTHON_ENV_PATH:-}" ] && [ -x "${IDF_PYTHON_ENV_PATH}/bin/esptool.py" ]; then
+    printf '%s\n' "${IDF_PYTHON_ENV_PATH}/bin/esptool.py"
     return 0
-  done < <(find "$project_dir/.embuild/espressif/python_env" -type f -path '*/bin/esptool.py' | sort)
+  fi
 
-  echo "Missing esptool.py under $project_dir/.embuild/espressif/python_env" >&2
+  wanted="$(load_requested_idf_version "$project_dir")"
+  python_env="$(find_requested_idf_python_env "$project_dir" "$wanted")"
+  if [ -x "$python_env/bin/esptool.py" ]; then
+    printf '%s\n' "$python_env/bin/esptool.py"
+    return 0
+  fi
+
+  echo "Missing esptool.py for $wanted under $project_dir/.embuild/espressif/python_env" >&2
   return 1
 }
 

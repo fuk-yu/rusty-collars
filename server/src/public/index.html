@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Rusty Collars Debug Control</title>
+  <style>
+    :root {
+      --bg: #0d1117;
+      --panel: #161b22;
+      --panel-strong: #1f2630;
+      --text: #e6edf3;
+      --muted: #9da7b3;
+      --accent: #1f8bff;
+      --accent-strong: #125ec2;
+      --danger: #cc4d5f;
+      --danger-strong: #922c3a;
+      --border: rgba(255,255,255,0.08);
+      --shadow: rgba(0,0,0,0.25);
+    }
+
+    * { box-sizing: border-box; }
+    html, body { margin: 0; min-height: 100%; background: radial-gradient(circle at top, #182231, var(--bg) 50%); color: var(--text); font-family: "IBM Plex Sans", "Segoe UI", sans-serif; }
+    button, input, select, textarea { font: inherit; }
+    button, input, select, textarea { border-radius: 10px; border: 1px solid var(--border); background: var(--panel-strong); color: var(--text); }
+    button { padding: 0.7rem 1rem; cursor: pointer; }
+    button:hover { border-color: rgba(255,255,255,0.16); }
+    button.accent { background: linear-gradient(135deg, var(--accent), var(--accent-strong)); }
+    button.danger { background: linear-gradient(135deg, var(--danger), var(--danger-strong)); }
+    button:disabled { opacity: 0.45; cursor: not-allowed; }
+    input, select, textarea { width: 100%; padding: 0.7rem 0.8rem; }
+    textarea { min-height: 20rem; resize: vertical; font-family: "IBM Plex Mono", monospace; }
+    code { font-family: "IBM Plex Mono", monospace; }
+
+    .shell { display: grid; grid-template-columns: 20rem minmax(0, 1fr); min-height: 100vh; }
+    .sidebar { padding: 1.25rem; border-right: 1px solid var(--border); background: rgba(10, 14, 19, 0.82); backdrop-filter: blur(18px); }
+    .sidebar-header { display: flex; justify-content: space-between; align-items: baseline; gap: 1rem; margin-bottom: 1rem; }
+    .sidebar-header h1 { margin: 0; font-size: 1.1rem; }
+    .meta { color: var(--muted); font-size: 0.88rem; }
+    .board-list { display: flex; flex-direction: column; gap: 0.75rem; }
+    .board-card { width: 100%; text-align: left; padding: 0.9rem; background: var(--panel); box-shadow: 0 10px 24px var(--shadow); }
+    .board-card-active { border-color: rgba(31, 139, 255, 0.65); box-shadow: 0 0 0 1px rgba(31, 139, 255, 0.25), 0 10px 24px var(--shadow); }
+    .board-card-top { display: flex; justify-content: space-between; gap: 1rem; margin-bottom: 0.35rem; }
+    .board-card-body { display: flex; flex-direction: column; gap: 0.2rem; color: var(--muted); font-size: 0.86rem; }
+
+    .main { padding: 1.25rem; display: flex; flex-direction: column; gap: 1rem; }
+    .panel { background: rgba(22, 27, 34, 0.9); border: 1px solid var(--border); border-radius: 18px; padding: 1rem 1.1rem; box-shadow: 0 16px 40px var(--shadow); }
+    .panel-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; margin-bottom: 1rem; }
+    .panel-header h2 { margin: 0 0 0.2rem; font-size: 1.05rem; }
+    .toolbar, .button-row, .row-actions, .button-stack { display: flex; gap: 0.6rem; flex-wrap: wrap; }
+    .button-stack { flex-direction: column; }
+    .grid { display: grid; gap: 0.9rem; }
+    .grid-5 { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+    .grid-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    .grid-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: 0.9rem; }
+    label { display: flex; flex-direction: column; gap: 0.45rem; }
+    label span { color: var(--muted); font-size: 0.88rem; }
+    .stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0.9rem; }
+    .stats div { padding: 0.9rem; border-radius: 14px; background: rgba(255,255,255,0.03); border: 1px solid var(--border); }
+    .stats span { display: block; color: var(--muted); font-size: 0.82rem; margin-bottom: 0.25rem; }
+    .stats strong { font-size: 1rem; }
+    .table { width: 100%; border-collapse: collapse; }
+    .table th, .table td { text-align: left; padding: 0.8rem 0.55rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+    .table th { color: var(--muted); font-size: 0.84rem; font-weight: 600; }
+    .preset-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(20rem, 34rem); gap: 1rem; }
+    .preset-list { display: flex; flex-direction: column; gap: 0.75rem; }
+    .preset-card { border: 1px solid var(--border); border-radius: 14px; padding: 0.85rem; background: rgba(255,255,255,0.03); }
+    .preset-card-top { display: flex; justify-content: space-between; gap: 1rem; margin-bottom: 0.4rem; }
+    .preset-card-body { color: var(--muted); font-size: 0.88rem; margin-bottom: 0.7rem; }
+    .stacked { display: flex; flex-direction: column; gap: 0.5rem; }
+    .event-list { display: flex; flex-direction: column; gap: 0.55rem; max-height: 28rem; overflow-y: auto; }
+    .event-item { display: grid; grid-template-columns: 12rem 9rem 1fr; gap: 0.85rem; padding: 0.7rem 0.8rem; border-radius: 12px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.04); }
+    .event-time, .event-source { color: var(--muted); font-size: 0.84rem; }
+    .event-source { text-transform: uppercase; letter-spacing: 0.04em; }
+    .banner { padding: 0.9rem 1rem; border-radius: 14px; border: 1px solid var(--border); }
+    .banner-info { background: rgba(31, 139, 255, 0.16); }
+    .banner-error { background: rgba(204, 77, 95, 0.16); }
+    .error-box { margin-top: 1rem; padding: 0.8rem 0.9rem; border-radius: 12px; background: rgba(204, 77, 95, 0.12); color: #ffc7ce; }
+    .empty, .empty-row, .empty-panel p { color: var(--muted); }
+    .empty-panel { padding: 2rem; }
+
+    @media (max-width: 1200px) {
+      .grid-5, .grid-4, .grid-2, .stats, .preset-layout { grid-template-columns: 1fr 1fr; }
+      .event-item { grid-template-columns: 1fr; }
+    }
+
+    @media (max-width: 900px) {
+      .shell { grid-template-columns: 1fr; }
+      .sidebar { border-right: 0; border-bottom: 1px solid var(--border); }
+      .grid-5, .grid-4, .grid-2, .stats, .preset-layout { grid-template-columns: 1fr; }
+    }
+
+    /* Preset editor overlay */
+    .editor-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 100; overflow-y: auto; }
+    .editor-overlay.active { display: flex; justify-content: center; padding: 20px; }
+    .editor-box { background: var(--bg); border: 1px solid var(--border); border-radius: 18px; padding: 1.25rem; width: 100%; max-width: 650px; max-height: 90vh; overflow-y: auto; box-shadow: 0 24px 60px rgba(0,0,0,0.5); }
+    .editor-box h2 { margin: 0 0 1rem; font-size: 1.1rem; }
+    .editor-track { background: var(--panel); border-radius: 14px; padding: 0.75rem; margin-bottom: 0.75rem; }
+    .editor-track-header { cursor: pointer; user-select: none; display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; }
+    .editor-track-header .fold-arrow { transition: transform 0.15s; display: inline-block; }
+    .editor-track-header .fold-arrow.open { transform: rotate(90deg); }
+    .editor-track-body { display: none; margin-top: 0.5rem; }
+    .editor-track-body.open { display: block; }
+    .editor-step { display: flex; flex-direction: column; gap: 0.5rem; margin-bottom: 0.5rem; padding: 0.6rem; border-radius: 10px; background: rgba(255,255,255,0.03); border: 1px solid var(--border); }
+    .editor-step-header { display: flex; gap: 0.5rem; align-items: center; }
+    .editor-step-header select { flex: 1; min-width: 0; }
+    .editor-slider { display: flex; align-items: center; gap: 0.5rem; }
+    .editor-slider .slider-label { width: 5rem; flex-shrink: 0; font-size: 0.84rem; color: var(--muted); }
+    .editor-slider input[type=range] { flex: 1; accent-color: var(--accent); }
+    .editor-slider .slider-val { min-width: 2.5rem; text-align: right; font-size: 0.84rem; color: var(--muted); }
+    .editor-actions { display: flex; gap: 0.6rem; margin-top: 1rem; justify-content: flex-end; }
+    .editor-preview { margin-top: 1rem; background: var(--panel); border-radius: 14px; padding: 0.75rem; }
+    .editor-preview summary { cursor: pointer; font-weight: 600; font-size: 0.92rem; }
+    .editor-preview .ep-status { font-size: 0.84rem; color: var(--muted); margin-top: 0.5rem; }
+    .editor-preview .ep-status.ep-error { color: var(--danger); }
+    .editor-preview .ep-summary { font-size: 0.8rem; color: var(--muted); margin-top: 0.5rem; }
+    .ep-timeline { margin-top: 0.5rem; }
+    .ep-timeline-scale { display: flex; justify-content: space-between; margin-bottom: 3px; font-size: 0.72rem; color: var(--muted); font-family: "IBM Plex Mono", monospace; }
+    .ep-timeline-bar { display: flex; border-radius: 6px; overflow: hidden; background: rgba(255,255,255,0.04); border: 1px solid var(--border); height: 20px; }
+    .ep-seg { flex: none; height: 100%; border: none; border-radius: 0; cursor: pointer; opacity: 0.85; min-width: 1px; padding: 0; }
+    .ep-seg:hover, .ep-seg.active { opacity: 1; outline: none; }
+    .ep-table { width: 100%; border-collapse: collapse; font-size: 0.72rem; margin-top: 0.5rem; }
+    .ep-table th, .ep-table td { text-align: left; padding: 3px 5px; border-bottom: 1px solid var(--border); vertical-align: top; white-space: nowrap; }
+    .ep-table th { color: var(--muted); font-weight: 600; }
+    .ep-table .hex { white-space: normal; word-break: break-all; }
+    .ep-row { transition: background-color 0.12s; }
+    .ep-row.active { background: rgba(255,255,255,0.08); }
+  </style>
+</head>
+<body>
+  <div id="app"></div>
+  <div class="editor-overlay" id="editor-overlay">
+    <div class="editor-box">
+      <h2 id="editor-title">New Preset</h2>
+      <div style="margin-bottom:0.75rem">
+        <label><span>Name</span><input type="text" id="editor-name" placeholder="Preset name"></label>
+      </div>
+      <div id="editor-tracks"></div>
+      <button id="editor-add-track" style="margin-top:0.5rem">+ Add Track</button>
+      <details class="editor-preview" id="editor-preview-panel">
+        <summary>Preview</summary>
+        <div class="ep-status" id="ep-status">No preview yet.</div>
+        <div class="ep-summary" id="ep-summary"></div>
+        <div class="ep-timeline" id="ep-timeline"></div>
+        <div id="ep-events"></div>
+      </details>
+      <div class="editor-actions">
+        <button id="editor-cancel">Cancel</button>
+        <button class="accent" id="editor-save">Save</button>
+      </div>
+    </div>
+  </div>
+  <script type="module" src="/client.js"></script>
+</body>
+</html>

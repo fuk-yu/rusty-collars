@@ -21,7 +21,7 @@ run_in_env() {
 run_in_env bash -lc 'cargo +esp --version >/dev/null 2>&1 || { echo "Missing repo-local ESP toolchain. Run ./scripts/bootstrap-toolchain.sh" >&2; exit 1; }'
 
 if [[ "$OPT_CLEAN" == true ]]; then
-  run_in_env cargo +esp clean
+  run_in_env cargo +esp clean --target "$TARGET_TRIPLE"
 fi
 
 run_in_env cargo +esp build --release

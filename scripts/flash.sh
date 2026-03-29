@@ -35,6 +35,13 @@ if [[ -n "$ESPFLASH_FLASH_ARGS" ]]; then
   app_bin="$project_dir/target/$TARGET_TRIPLE/release/rusty-collars.bin"
   run_in_env "$idf_python" "$esptool" --chip "$TARGET_CHIP" elf2image --output "$app_bin" "$project_dir/$TARGET_BINARY"
 
+  # Erase otadata so the bootloader boots from ota_0 (where we flash).
+  # Without this, a previous OTA update may have switched to ota_1,
+  # causing the bootloader to ignore the freshly flashed ota_0 image.
+  # espflash erase-region requires the RAM stub which doesn't work on
+  # some chips (e.g. P4 rev <3.0), so we use esptool.py instead.
+  run_in_env "$idf_python" "$esptool" --chip "$TARGET_CHIP" --no-stub erase_region 0xf000 0x2000
+
   if [[ "$OPT_BOOTLOADER" == true ]]; then
     run_in_env espflash write-bin $ESPFLASH_FLASH_ARGS "$BOOTLOADER_OFFSET" "$bootloader_bin"
     run_in_env espflash write-bin $ESPFLASH_FLASH_ARGS 0x8000 "$idf_build_dir/partition_table/partition-table.bin"

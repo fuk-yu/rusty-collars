@@ -1,3 +1,5 @@
+use std::collections::VecDeque;
+
 use serde::{Deserialize, Serialize};
 
 pub const MAX_INTENSITY: u8 = 99;
@@ -5,6 +7,9 @@ pub const MAX_CHANNEL: u8 = 2;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DeviceSettings {
+    // Device identity
+    #[serde(default)]
+    pub device_id: String,
     // GPIO
     #[serde(alias = "led_pin")]
     pub tx_led_pin: u8,
@@ -80,6 +85,7 @@ impl Default for DeviceSettings {
     fn default() -> Self {
         let (tx_led_pin, rx_led_pin, rf_tx_pin, rf_rx_pin) = Self::default_pins();
         Self {
+            device_id: String::new(),
             tx_led_pin,
             rx_led_pin,
             rf_tx_pin,
@@ -288,6 +294,7 @@ pub enum ClientMessage {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerMessage<'a> {
     State {
+        device_id: &'a str,
         app_version: &'a str,
         server_uptime_s: u64,
         collars: &'a [Collar],
@@ -300,7 +307,7 @@ pub enum ServerMessage<'a> {
     },
     RfDebugState {
         listening: bool,
-        events: &'a [RfDebugFrame],
+        events: &'a VecDeque<RfDebugFrame>,
     },
     RfDebugEvent {
         event: &'a RfDebugFrame,
@@ -530,6 +537,7 @@ mod tests {
     #[test]
     fn device_settings_defaults_include_remote_control_and_event_log() {
         let settings = DeviceSettings::default();
+        assert_eq!(settings.device_id, "");
         assert!(!settings.remote_control_enabled);
         assert_eq!(settings.remote_control_url, "");
         assert!(settings.remote_control_validate_cert);

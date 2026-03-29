@@ -9,4 +9,4 @@ TARGET_NAME="${1:?Usage: $0 <$SUPPORTED_TARGETS>}"
 activate_target "$project_dir" "$TARGET_NAME"
 
 echo "Target: $TARGET_NAME ($TARGET_TRIPLE)"
-echo "Config updated. Run 'cargo clean' then build."
+echo "Config updated. Build cache will auto-clean if the ESP-IDF/toolchain fingerprint changed."

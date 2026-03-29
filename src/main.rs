@@ -56,9 +56,11 @@ fn main() -> Result<()> {
         );
     }
 
-    // Load GPIO settings from NVS (before consuming peripherals)
+    // Load settings from NVS (before consuming peripherals).
+    // Generates a persistent device UUID on first boot.
     let temp_storage = storage::Storage::new(nvs_partition.clone())?;
-    let device_settings = temp_storage.load_settings()?;
+    let mut device_settings = temp_storage.load_settings()?;
+    temp_storage.ensure_device_id(&mut device_settings)?;
     drop(temp_storage);
     info!(
         "GPIO settings: TX LED={}, RX LED={}, RF TX={}, RF RX={}",

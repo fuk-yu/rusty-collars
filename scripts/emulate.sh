@@ -2,6 +2,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 project_dir="$PWD"
+. "$project_dir/scripts/prepare-toolchain-env.sh"
 
 source "$project_dir/scripts/target-info.sh"
 parse_target_arg "$@"

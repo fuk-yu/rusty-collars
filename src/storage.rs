@@ -20,6 +20,16 @@ impl Storage {
         Ok(Self { nvs })
     }
 
+    /// Generates and persists a device UUID if one doesn't exist yet.
+    pub fn ensure_device_id(&self, settings: &mut DeviceSettings) -> Result<()> {
+        if settings.device_id.is_empty() {
+            settings.device_id = generate_uuid_v4();
+            self.save_settings(settings)?;
+            info!("Generated new device ID: {}", settings.device_id);
+        }
+        Ok(())
+    }
+
     pub fn load_collars(&self) -> Result<Vec<Collar>> {
         self.load_json(KEY_COLLARS)
     }
@@ -73,4 +83,23 @@ impl Storage {
         self.nvs.set_str(key, &json)?;
         Ok(())
     }
+}
+
+/// Generate a UUID v4 using the ESP-IDF hardware RNG.
+fn generate_uuid_v4() -> String {
+    let mut bytes = [0u8; 16];
+    unsafe {
+        esp_idf_svc::sys::esp_fill_random(bytes.as_mut_ptr() as *mut core::ffi::c_void, 16);
+    }
+    // Set version (4) and variant (1) bits per RFC 4122
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    format!(
+        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        bytes[0], bytes[1], bytes[2], bytes[3],
+        bytes[4], bytes[5],
+        bytes[6], bytes[7],
+        bytes[8], bytes[9],
+        bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15]
+    )
 }

@@ -5,6 +5,9 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use log::warn;
 
+use esp_idf_svc::handle::RawHandle;
+use esp_idf_svc::io::EspIOError;
+use esp_idf_svc::sys::ESP_ERR_INVALID_ARG;
 use esp_idf_svc::ws::client::{
     EspWebSocketClient, EspWebSocketClientConfig, EspWebSocketTransport, FrameType,
     WebSocketEventType,
@@ -21,10 +24,14 @@ use crate::server::{
 
 const DISABLED_POLL_INTERVAL_MS: u64 = 500;
 const EVENT_LOOP_TICK_MS: u64 = 100;
+const CONNECT_TIMEOUT_MS: u64 = 3_000;
+const INITIAL_SYNC_DELAY_MS: u64 = 500;
 const RECONNECT_BASE_DELAY_MS: u64 = 1_000;
-const RECONNECT_MAX_DELAY_MS: u64 = 30_000;
+const RECONNECT_MAX_DELAY_MS: u64 = 10_000;
 const REMOTE_PING_INTERVAL_MS: u64 = 5_000;
 const REMOTE_PING_TIMEOUT_MS: u64 = 15_000;
+const WS_BUFFER_SIZE: usize = 8 * 1024;
+const WS_NETWORK_TIMEOUT: Duration = Duration::from_secs(10);
 const WS_SEND_TIMEOUT: Duration = Duration::from_secs(10);
 
 enum RemoteWsEvent {
@@ -152,8 +159,44 @@ fn run_connection(
         }
     };
 
+    let exit = run_event_loop(ctx, settings, &mut client, &event_rx, settings_revision);
+    safe_drop_ws_client(client);
+    exit
+}
+
+/// The upstream `EspWebSocketClient::Drop` (esp-idf-svc 0.52) calls `.unwrap()`
+/// on `esp_websocket_client_close` / `esp_websocket_client_destroy`, which panics
+/// (aborting the process on ESP-IDF) when the transport was never established or
+/// was already torn down. Work around this by extracting the raw C handle,
+/// forgetting the Rust wrapper, and manually performing cleanup without unwrap.
+///
+/// Uses `esp_websocket_client_stop` instead of `close` because `close` sends a
+/// CLOSE frame and waits for the server's response — which hangs when the server
+/// is already dead. `stop` tears down the TCP connection immediately.
+///
+/// The callback closure (~64 bytes) is leaked each time. This is acceptable for
+/// a reconnection that happens at most every few seconds.
+fn safe_drop_ws_client(client: EspWebSocketClient<'static>) {
+    let handle = client.handle();
+    std::mem::forget(client);
+    unsafe {
+        let _ = esp_idf_svc::sys::esp_websocket_client_stop(handle);
+        let _ = esp_idf_svc::sys::esp_websocket_client_destroy(handle);
+    }
+}
+
+fn run_event_loop(
+    ctx: &AppCtx,
+    settings: &DeviceSettings,
+    client: &mut EspWebSocketClient<'_>,
+    event_rx: &mpsc::Receiver<RemoteWsEvent>,
+    settings_revision: u32,
+) -> RunLoopExit {
     let mut broadcast_rx = ctx.broadcast_tx.new_receiver();
     let mut connected = false;
+    let mut transport_connected = false;
+    let connect_started_at = Instant::now();
+    let mut initial_sync_due_at: Option<Instant> = None;
     let mut next_ping_at = Instant::now();
     let mut next_ping_nonce = 0u32;
     let mut pending_ping: Option<(u32, Instant)> = None;
@@ -165,13 +208,44 @@ fn run_connection(
             };
         }
 
+        if !transport_connected && client.is_connected() {
+            transport_connected = true;
+            initial_sync_due_at = Some(
+                Instant::now() + Duration::from_millis(INITIAL_SYNC_DELAY_MS),
+            );
+        }
+
+        if transport_connected && !connected && pending_ping.is_none() {
+            if let Some(sync_due_at) = initial_sync_due_at {
+                let now = Instant::now();
+                if now >= sync_due_at {
+                    next_ping_nonce = next_ping_nonce.wrapping_add(1);
+                    let ping = serde_json::json!({
+                        "type": "ping",
+                        "nonce": next_ping_nonce,
+                    })
+                    .to_string();
+
+                    if let Err(err) = send_text(client, &ping) {
+                        return RunLoopExit::Disconnected {
+                            was_connected: false,
+                            reason: err,
+                        };
+                    }
+
+                    pending_ping = Some((next_ping_nonce, now));
+                    initial_sync_due_at = None;
+                }
+            }
+        }
+
         if connected {
             while let Ok(message) = broadcast_rx.try_recv() {
                 if message.rf_debug {
                     continue;
                 }
 
-                if let Err(err) = send_text(&mut client, &message.json) {
+                if let Err(err) = send_text(client, &message.json) {
                     return RunLoopExit::Disconnected {
                         was_connected: connected,
                         reason: err,
@@ -195,7 +269,7 @@ fn run_connection(
                 })
                 .to_string();
 
-                if let Err(err) = send_text(&mut client, &ping) {
+                if let Err(err) = send_text(client, &ping) {
                     return RunLoopExit::Disconnected {
                         was_connected: connected,
                         reason: err,
@@ -209,39 +283,11 @@ fn run_connection(
 
         match event_rx.recv_timeout(Duration::from_millis(EVENT_LOOP_TICK_MS)) {
             Ok(RemoteWsEvent::Connected) => {
-                if connected {
-                    continue;
-                }
-
-                connected = true;
-                pending_ping = None;
-                next_ping_at = Instant::now();
-                ctx.set_remote_control_status(status_from_settings(
-                    settings,
-                    true,
-                    None,
-                    "Connected",
-                ));
-                ctx.record_event(
-                    EventSource::System,
-                    EventLogEntryKind::RemoteControlConnection {
-                        connected: true,
-                        url: settings.remote_control_url.trim().to_string(),
-                        reason: None,
-                    },
-                );
-
-                if let Err(err) = send_text(&mut client, &ctx.state_json()) {
-                    return RunLoopExit::Disconnected {
-                        was_connected: connected,
-                        reason: err,
-                    };
-                }
-                if let Err(err) = send_text(&mut client, &ctx.event_log_state_json()) {
-                    return RunLoopExit::Disconnected {
-                        was_connected: connected,
-                        reason: err,
-                    };
+                if !transport_connected {
+                    transport_connected = true;
+                    initial_sync_due_at = Some(
+                        Instant::now() + Duration::from_millis(INITIAL_SYNC_DELAY_MS),
+                    );
                 }
             }
             Ok(RemoteWsEvent::Disconnected(reason)) => {
@@ -250,36 +296,70 @@ fn run_connection(
                     reason,
                 };
             }
-            Ok(RemoteWsEvent::Text(text)) => match handle_text(ctx, &mut client, &text) {
-                Ok(RemoteTextOutcome::None) => {}
-                Ok(RemoteTextOutcome::Pong(nonce)) => {
-                    if let Some((pending_nonce, started_at)) = pending_ping {
-                        if pending_nonce == nonce {
-                            let rtt_ms = now_rtt_ms(started_at);
-                            pending_ping = None;
-                            ctx.set_remote_control_status(status_from_settings(
-                                settings,
-                                true,
-                                Some(rtt_ms),
-                                "Connected",
-                            ));
+            Ok(RemoteWsEvent::Text(text)) => {
+                match handle_text(ctx, client, &text) {
+                    Ok(RemoteTextOutcome::None) => {}
+                    Ok(RemoteTextOutcome::Pong(nonce)) => {
+                        if let Some((pending_nonce, started_at)) = pending_ping {
+                            if pending_nonce == nonce {
+                                let rtt_ms = now_rtt_ms(started_at);
+                                pending_ping = None;
+                                if !connected {
+                                    connected = true;
+                                    next_ping_at = Instant::now()
+                                        + Duration::from_millis(REMOTE_PING_INTERVAL_MS);
+                                    if let Err(err) =
+                                        send_initial_state(ctx, settings, client)
+                                    {
+                                        return RunLoopExit::Disconnected {
+                                            was_connected: connected,
+                                            reason: err,
+                                        };
+                                    }
+                                }
+                                ctx.set_remote_control_status(status_from_settings(
+                                    settings,
+                                    true,
+                                    Some(rtt_ms),
+                                    "Connected",
+                                ));
+                            }
                         }
                     }
+                    Err(err) => {
+                        return RunLoopExit::Disconnected {
+                            was_connected: connected,
+                            reason: err,
+                        };
+                    }
                 }
-                Err(err) => {
-                    return RunLoopExit::Disconnected {
-                        was_connected: connected,
-                        reason: err,
-                    };
-                }
-            },
+            }
             Ok(RemoteWsEvent::Error(reason)) => {
                 return RunLoopExit::Disconnected {
                     was_connected: connected,
                     reason,
                 };
             }
-            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                if !transport_connected
+                    && connect_started_at.elapsed().as_millis() as u64 >= CONNECT_TIMEOUT_MS
+                {
+                    return RunLoopExit::Disconnected {
+                        was_connected: false,
+                        reason: format!("Connect timeout after {CONNECT_TIMEOUT_MS}ms"),
+                    };
+                }
+                if !connected {
+                    if let Some((nonce, started_at)) = pending_ping {
+                        if started_at.elapsed().as_millis() as u64 >= REMOTE_PING_TIMEOUT_MS {
+                            return RunLoopExit::Disconnected {
+                                was_connected: false,
+                                reason: format!("Handshake ping timeout for nonce {nonce}"),
+                            };
+                        }
+                    }
+                }
+            }
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 return RunLoopExit::Disconnected {
                     was_connected: connected,
@@ -302,6 +382,8 @@ fn connect_client(
 
     let config = EspWebSocketClientConfig {
         disable_auto_reconnect: true,
+        buffer_size: WS_BUFFER_SIZE,
+        network_timeout_ms: WS_NETWORK_TIMEOUT,
         transport,
         skip_cert_common_name_check: !settings.remote_control_validate_cert,
         #[cfg(not(esp_idf_version_major = "4"))]
@@ -315,7 +397,14 @@ fn connect_client(
         ..Default::default()
     };
 
-    let url = settings.remote_control_url.trim().to_string();
+    let base_url = settings.remote_control_url.trim();
+    let url = if settings.device_id.is_empty() {
+        base_url.to_string()
+    } else if base_url.ends_with('/') {
+        format!("{}{}", base_url, settings.device_id)
+    } else {
+        format!("{}/{}", base_url, settings.device_id)
+    };
     let event_tx_for_callback = event_tx.clone();
     Ok(EspWebSocketClient::new(
         &url,
@@ -339,8 +428,14 @@ fn connect_client(
                     WebSocketEventType::Ping => None,
                     WebSocketEventType::Pong => None,
                     WebSocketEventType::BeforeConnect => None,
-                },
-                Err(err) => Some(RemoteWsEvent::Error(format!("{err:?}"))),
+                }
+                Err(err) => {
+                    if should_ignore_callback_error(&err) {
+                        None
+                    } else {
+                        Some(RemoteWsEvent::Error(format!("{err:?}")))
+                    }
+                }
             };
 
             if let Some(event) = outgoing {
@@ -439,6 +534,38 @@ fn send_error(
     })
     .unwrap();
     send_text(client, &json)
+}
+
+fn should_ignore_callback_error(err: &EspIOError) -> bool {
+    // esp-idf-svc 0.52.1 does not decode some newer websocket callback event ids
+    // exposed by the managed esp_websocket_client component and reports them as
+    // ESP_ERR_INVALID_ARG. These are benign for our usage.
+    err.0.code() == ESP_ERR_INVALID_ARG
+}
+
+fn send_initial_state(
+    ctx: &AppCtx,
+    settings: &DeviceSettings,
+    client: &mut EspWebSocketClient<'_>,
+) -> core::result::Result<(), String> {
+    ctx.set_remote_control_status(status_from_settings(
+        settings,
+        true,
+        None,
+        "Connected",
+    ));
+    ctx.record_event(
+        EventSource::System,
+        EventLogEntryKind::RemoteControlConnection {
+            connected: true,
+            url: settings.remote_control_url.trim().to_string(),
+            reason: None,
+        },
+    );
+
+    send_text(client, &ctx.remote_control_status_json())?;
+    send_text(client, &ctx.state_json())?;
+    send_text(client, &ctx.event_log_state_json())
 }
 
 fn status_from_settings(

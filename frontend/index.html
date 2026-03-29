@@ -96,11 +96,11 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 .preset-preview-legend strong { color: var(--text); font-weight: 600; }
 .preset-preview-timeline { margin-top: 10px; }
 .preset-preview-timeline-scale { display: flex; justify-content: space-between; gap: 8px; margin-bottom: 4px; font-size: 0.72em; color: var(--text2); }
-.preset-preview-timeline-bar { position: relative; height: 28px; border-radius: 6px; overflow: hidden; background: linear-gradient(180deg, rgba(255,255,255,0.05), rgba(255,255,255,0.02)); border: 1px solid rgba(255,255,255,0.1); }
-.preset-preview-segment { position: absolute; top: 3px; bottom: 3px; border-radius: 4px; border: 1px solid rgba(255,255,255,0.28); cursor: pointer; opacity: 0.9; transition: transform 0.12s, opacity 0.12s, box-shadow 0.12s; }
+.preset-preview-timeline-bar { display: flex; border-radius: 6px; overflow: hidden; background: linear-gradient(180deg, rgba(255,255,255,0.05), rgba(255,255,255,0.02)); border: 1px solid rgba(255,255,255,0.1); height: 20px; }
+.preset-preview-segment { flex: none; height: 100%; border: none; border-radius: 0; cursor: pointer; opacity: 0.85; min-width: 1px; padding: 0; }
 .preset-preview-segment:hover,
 .preset-preview-segment:focus-visible,
-.preset-preview-segment.active { opacity: 1; box-shadow: 0 0 0 2px rgba(255,255,255,0.18); transform: translateY(-1px); z-index: 2; outline: none; }
+.preset-preview-segment.active { opacity: 1; outline: none; }
 .preset-preview-table-wrap { margin-top: 10px; overflow-x: auto; }
 .preset-preview-table { width: 100%; border-collapse: collapse; font-size: 0.72em; }
 .preset-preview-table th, .preset-preview-table td { text-align: left; padding: 4px 6px; border-bottom: 1px solid rgba(255,255,255,0.08); vertical-align: top; }
@@ -222,6 +222,13 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 </div>
 
 <div class="tab-content" id="tab-settings">
+  <div class="card">
+    <h3>Device Identity</h3>
+    <div class="form-row" style="margin-top:8px">
+      <label>Device ID</label>
+      <input type="text" id="settings-device-id" placeholder="(auto-generated UUID)" style="flex:2">
+    </div>
+  </div>
   <div class="card">
     <h3>WiFi Client (STA)</h3>
     <div class="form-row" style="margin-top:8px">
@@ -375,7 +382,7 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 <script>
 const FRONTEND_APP_VERSION = "__RUSTY_COLLARS_APP_VERSION__";
 let ws = null;
-let state = { app_version: null, collars: [], presets: [], preset_running: null, rf_lockout_remaining_ms: 0, device_settings: null };
+let state = { device_id: null, app_version: null, collars: [], presets: [], preset_running: null, rf_lockout_remaining_ms: 0, device_settings: null };
 let remoteStatus = { enabled: false, connected: false, url: '', validate_cert: true, rtt_ms: null, status_text: 'Off' };
 let eventLog = { enabled: false, events: [] };
 let rfDebug = { listening: false, events: [] };
@@ -483,8 +490,7 @@ function renderHeap() {
 
 function renderAppVersion() {
   const el = document.getElementById('app-version');
-  if (!el) return;
-  el.textContent = state.app_version || FRONTEND_APP_VERSION;
+  if (el) el.textContent = state.app_version || FRONTEND_APP_VERSION;
 }
 
 function setConnectionStatus(connected, text) {
@@ -1071,27 +1077,31 @@ function renderPreviewTimeline(preview) {
 
   const timelineEndUs = computePreviewTimelineEndUs(preview);
 
+  // Build sequential segments: gap, event, gap, event, ...
+  // Segment flex values are capped so they stay thin relative to gaps.
+  const sorted = preview.events.map((e, i) => ({ e, i })).sort((a, b) => a.e.actual_time_us - b.e.actual_time_us);
+  const segCap = timelineEndUs / sorted.length / 8;
+  let segments = '';
+  let cursor = 0;
+  for (const { e: event, i: index } of sorted) {
+    const gapUs = event.actual_time_us - cursor;
+    if (gapUs > 0 && timelineEndUs > 0) {
+      segments += `<div style="flex:${gapUs}"></div>`;
+    }
+    const segFlex = Math.max(1, Math.min(event.transmit_duration_us, segCap));
+    segments += `<button type="button" class="preset-preview-segment" data-preview-id="preview-${index}" title="${esc(buildPreviewSegmentTitle(event))}" style="flex:${segFlex};min-width:1px;background:${previewTrackColor(event.track_index)}"></button>`;
+    cursor = event.actual_time_us + event.transmit_duration_us;
+  }
+  if (cursor < timelineEndUs) {
+    segments += `<div style="flex:${timelineEndUs - cursor}"></div>`;
+  }
+
   timelineEl.innerHTML = `
     <div class="preset-preview-timeline-scale">
       <span class="mono">0ms</span>
       <span class="mono">${formatPreviewTimeUs(timelineEndUs)}</span>
     </div>
-    <div class="preset-preview-timeline-bar">
-      ${preview.events.map((event, index) => {
-        const previewId = `preview-${index}`;
-        const leftPct = timelineEndUs === 0 ? 0 : (event.actual_time_us / timelineEndUs) * 100;
-        const widthPct = timelineEndUs === 0 ? 100 : Math.max((event.transmit_duration_us / timelineEndUs) * 100, 0.35);
-        return `
-          <button
-            type="button"
-            class="preset-preview-segment"
-            data-preview-id="${previewId}"
-            title="${esc(buildPreviewSegmentTitle(event))}"
-            style="left:${leftPct}%;width:${widthPct}%;background:${previewTrackColor(event.track_index)}"
-          ></button>
-        `;
-      }).join('')}
-    </div>
+    <div class="preset-preview-timeline-bar">${segments}</div>
   `;
   bindPreviewEventHighlights(timelineEl);
 }
@@ -1154,7 +1164,7 @@ function renderEditorPreview() {
               <td style="color:${previewTrackColor(event.track_index)}">${event.track_index + 1}</td>
               <td>${event.step_index + 1}</td>
               <td class="mono">${formatPreviewTimeUs(event.transmit_duration_us)}</td>
-              <td>${esc(event.collar_name)} <span style="color:var(--text2)">CH${event.channel + 1}</span></td>
+              <td>${esc(event.collar_name)}</td>
               <td title="${esc(describeMode(event.mode))}">${MODE_EMOJI[event.mode] || esc(describeMode(event.mode))}</td>
               <td>${event.intensity}</td>
               <td class="mono frame-hex">${event.raw_hex}</td>
@@ -1615,6 +1625,7 @@ function saveDeviceSettings() {
   send({
     type: 'save_device_settings',
     settings: {
+      device_id: document.getElementById('settings-device-id').value.trim(),
       tx_led_pin: txLed,
       rx_led_pin: rxLed,
       rf_tx_pin: tx,
@@ -1636,6 +1647,7 @@ function saveDeviceSettings() {
 
 function handleDeviceSettings(msg) {
   const s = msg.settings;
+  document.getElementById('settings-device-id').value = s.device_id || '';
   document.getElementById('settings-tx-led-pin').value = s.tx_led_pin;
   document.getElementById('settings-rx-led-pin').value = s.rx_led_pin;
   document.getElementById('settings-tx-pin').value = s.rf_tx_pin;

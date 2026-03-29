@@ -3,9 +3,15 @@ set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 project_dir="${PROJECT_ROOT:-$(cd "$script_dir/.." && pwd)}"
+. "$script_dir/esp-idf-env.sh"
 gcc_wrapper="$(dirname "$(dirname "$(readlink -f "$(command -v gcc)")")")"
 dynamic_linker="$(<"$gcc_wrapper/nix-support/dynamic-linker")"
 alias_dir="$project_dir/.toolchain-bin"
+
+die() {
+  echo "$*" >&2
+  return 1 2>/dev/null || exit 1
+}
 
 path_prepend() {
   local path_entry="${1:?path_prepend requires a path}"
@@ -14,6 +20,33 @@ path_prepend() {
     *":${path_entry}:"*) ;;
     *) export PATH="${path_entry}:${PATH}" ;;
   esac
+}
+
+sanitize_embuild_path_entries() {
+  local sanitized_path=""
+  local path_entry
+  local old_ifs="$IFS"
+
+  IFS=':'
+  for path_entry in $PATH; do
+    case "$path_entry" in
+      "$alias_dir"|\
+      "$project_dir/.embuild/espressif/tools/"*|\
+      "$project_dir/.embuild/espressif/python_env/"*|\
+      "$project_dir/.embuild/espressif/esp-idf/"*/tools)
+        continue
+        ;;
+    esac
+
+    if [ -z "$sanitized_path" ]; then
+      sanitized_path="$path_entry"
+    else
+      sanitized_path="${sanitized_path}:$path_entry"
+    fi
+  done
+  IFS="$old_ifs"
+
+  export PATH="$sanitized_path"
 }
 
 patch_elf_interpreters() {
@@ -32,21 +65,19 @@ patch_elf_interpreters() {
 write_xtensa_dispatcher() {
   mkdir -p "$alias_dir"
 
+  local bindir
+  bindir="$(find_toolchain_bin_dir "$project_dir" xtensa-esp-elf)"
+
   cat >"$alias_dir/xtensa-esp32-elf-dispatch" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
 
 project_dir="$project_dir"
 dynamic_linker="$dynamic_linker"
+bindir="$bindir"
 tool_name="\${0##*/}"
 suffix="\${tool_name#xtensa-esp32-elf-}"
 real_name="xtensa-esp-elf-\$suffix"
-bindir=""
-
-while IFS= read -r candidate; do
-  bindir="\$candidate"
-  break
-done < <(find "\$project_dir/.embuild/espressif/tools/xtensa-esp-elf" -type d -path '*/xtensa-esp-elf/bin' | sort)
 
 [ -n "\$bindir" ] || {
   echo "Missing ESP-IDF xtensa toolchain under \$project_dir/.embuild" >&2
@@ -103,12 +134,12 @@ write_xtensa_aliases() {
   )
 
   local bindir
-  while IFS= read -r bindir; do
+  bindir="$(find_toolchain_bin_dir "$project_dir" xtensa-esp-elf)"
+  if [ -n "$bindir" ]; then
     while IFS= read -r tool; do
       suffixes+=("${tool#xtensa-esp-elf-}")
     done < <(find "$bindir" -maxdepth 1 -type f -name 'xtensa-esp-elf-*' -printf '%f\n')
-    break
-  done < <(find "$project_dir/.embuild/espressif/tools/xtensa-esp-elf" -type d -path '*/xtensa-esp-elf/bin' | sort)
+  fi
 
   printf '%s\n' "${suffixes[@]}" | sort -u | while IFS= read -r suffix; do
     ln -snf xtensa-esp32-elf-dispatch "$alias_dir/xtensa-esp32-elf-$suffix"
@@ -142,48 +173,6 @@ rewrite_python_env_shebangs() {
   done < <(find "$python_env/bin" -maxdepth 1 -type f ! -name 'python' ! -name 'python*' -print0)
 }
 
-load_requested_idf_version() {
-  grep 'esp_idf_version' "$project_dir/Cargo.toml" | sed 's/.*"\(.*\)"/\1/'
-}
-
-select_idf_path() {
-  local requested_version="${1:-}"
-  local candidate current_version
-
-  for candidate in "$project_dir"/.embuild/espressif/esp-idf/v5.*; do
-    [ -d "$candidate/.git" ] || continue
-    current_version="$(
-      git -C "$candidate" describe --tags --exact-match 2>/dev/null \
-        || git -C "$candidate" describe --tags 2>/dev/null \
-        || true
-    )"
-    if [ -n "$requested_version" ] && [ "$current_version" = "$requested_version" ]; then
-      printf '%s\n' "$candidate"
-      return 0
-    fi
-  done
-
-  for candidate in "$project_dir"/.embuild/espressif/esp-idf/v5.*; do
-    [ -d "$candidate" ] || continue
-    printf '%s\n' "$candidate"
-    return 0
-  done
-
-  return 0
-}
-
-select_python_env() {
-  local candidate
-
-  for candidate in "$project_dir"/.embuild/espressif/python_env/idf5.*; do
-    [ -d "$candidate" ] || continue
-    printf '%s\n' "$candidate"
-    return 0
-  done
-
-  return 0
-}
-
 select_esp_rom_elf_dir() {
   local candidate
 
@@ -196,10 +185,12 @@ select_esp_rom_elf_dir() {
   return 0
 }
 
+materialize_downloaded_toolchains "$project_dir"
 patch_elf_interpreters "$project_dir/.rustup/toolchains/esp"
 patch_elf_interpreters "$project_dir/.embuild/espressif/tools"
 write_xtensa_dispatcher
 write_xtensa_aliases
+sanitize_embuild_path_entries
 path_prepend "$alias_dir"
 
 while IFS= read -r clang_lib; do
@@ -207,28 +198,41 @@ while IFS= read -r clang_lib; do
   break
 done < <(find "$project_dir/.rustup/toolchains/esp" -type d -path '*/esp-clang/lib' | sort)
 
-requested_idf_version="$(load_requested_idf_version)"
-idf_path="$(select_idf_path "$requested_idf_version")"
-if [ -n "$idf_path" ]; then
-  export IDF_PATH="$idf_path"
-  export IDF_TOOLS_PATH="$project_dir/.embuild/espressif"
-  path_prepend "$IDF_PATH/tools"
+requested_idf_version="$(load_requested_idf_version "$project_dir")"
+[ -n "$requested_idf_version" ] || die "Missing esp_idf_version in $project_dir/Cargo.toml"
+
+idf_path="$(requested_idf_checkout_path "$project_dir" "$requested_idf_version")"
+if [ ! -d "$idf_path/.git" ]; then
+  echo "ESP-IDF $requested_idf_version not found, running bootstrap-toolchain.sh..."
+  "$project_dir/scripts/bootstrap-toolchain.sh"
+fi
+[ -d "$idf_path/.git" ] || die "bootstrap-toolchain.sh failed to install ESP-IDF $requested_idf_version"
+
+export IDF_PATH="$idf_path"
+export IDF_TOOLS_PATH="$project_dir/.embuild/espressif"
+path_prepend "$IDF_PATH/tools"
+
+python_env_path="$(find_requested_idf_python_env "$project_dir" "$requested_idf_version")"
+if [ -z "$python_env_path" ]; then
+  echo "ESP-IDF Python environment for $requested_idf_version not found, running bootstrap-toolchain.sh..."
+  "$project_dir/scripts/bootstrap-toolchain.sh"
+  python_env_path="$(find_requested_idf_python_env "$project_dir" "$requested_idf_version")"
+fi
+[ -n "$python_env_path" ] || die "bootstrap-toolchain.sh failed to install ESP-IDF Python environment for $requested_idf_version"
+
+rewrite_python_env_shebangs "$python_env_path"
+export IDF_PYTHON_ENV_PATH="$python_env_path"
+path_prepend "$IDF_PYTHON_ENV_PATH/bin"
+
+xtensa_tool_dir="$(find_toolchain_bin_dir "$project_dir" xtensa-esp-elf)"
+if [ -n "$xtensa_tool_dir" ]; then
+  path_prepend "$xtensa_tool_dir"
 fi
 
-python_env_path="$(select_python_env)"
-if [ -n "$python_env_path" ]; then
-  rewrite_python_env_shebangs "$python_env_path"
-  export IDF_PYTHON_ENV_PATH="$python_env_path"
-  path_prepend "$IDF_PYTHON_ENV_PATH/bin"
+riscv_tool_dir="$(find_toolchain_bin_dir "$project_dir" riscv32-esp-elf)"
+if [ -n "$riscv_tool_dir" ]; then
+  path_prepend "$riscv_tool_dir"
 fi
-
-while IFS= read -r tool_dir; do
-  path_prepend "$tool_dir"
-done < <(find "$project_dir/.embuild/espressif/tools/xtensa-esp-elf" -type d -path '*/xtensa-esp-elf/bin' | sort -r)
-
-while IFS= read -r tool_dir; do
-  path_prepend "$tool_dir"
-done < <(find "$project_dir/.embuild/espressif/tools/riscv32-esp-elf" -type d -path '*/riscv32-esp-elf/bin' | sort -r)
 
 esp_rom_elf_dir="$(select_esp_rom_elf_dir)"
 if [ -n "$esp_rom_elf_dir" ]; then
