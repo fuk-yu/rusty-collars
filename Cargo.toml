@@ -10,6 +10,9 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT"
 
+[features]
+p4-wifi = []
+
 [dependencies]
 rusty-collars-core = { path = "crates/core" }
 esp-idf-svc = "0.52"

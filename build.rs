@@ -11,6 +11,19 @@ fn main() {
 
     embuild::espidf::sysenv::output();
 
+    // Determine if this build has WiFi support.
+    // ESP32, ESP32-C6, etc: always have WiFi (built-in radio).
+    // ESP32-P4: only with the "p4-wifi" feature (WiFi via companion ESP32-C6 chip).
+    let mcu = std::env::var("MCU").unwrap_or_default();
+    let has_wifi = match mcu.as_str() {
+        "esp32p4" => std::env::var("CARGO_FEATURE_P4_WIFI").is_ok(),
+        _ => true,
+    };
+    if has_wifi {
+        println!("cargo:rustc-cfg=has_wifi");
+    }
+    println!("cargo:rerun-if-env-changed=MCU");
+
     // Gzip the frontend HTML at build time (saves ~29KB heap at runtime)
     let version = app_version();
     let html =

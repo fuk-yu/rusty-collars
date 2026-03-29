@@ -322,6 +322,7 @@ pub enum ServerMessage<'a> {
     DeviceSettings {
         settings: DeviceSettings,
         reboot_required: bool,
+        has_wifi: bool,
     },
     PresetPreview {
         nonce: u32,

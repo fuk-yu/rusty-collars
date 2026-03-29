@@ -22,7 +22,7 @@ if [[ "$OPT_CLEAN" == true ]]; then
   run_in_env cargo +esp clean
 fi
 
-run_in_env cargo +esp build --release
+run_in_env cargo +esp build --release $CARGO_FEATURES
 
 idf_build_dir=$(echo "$project_dir"/$IDF_BUILD_DIR)
 bootloader_bin="$idf_build_dir/bootloader/bootloader.bin"

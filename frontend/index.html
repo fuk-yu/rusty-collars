@@ -64,20 +64,20 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 
 /* Preset editor */
 .editor-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 100; overflow-y: auto; }
-.editor-overlay.active { display: flex; justify-content: center; padding: 20px; }
-.editor { background: var(--bg); border-radius: 8px; padding: 20px; width: 100%; max-width: 600px; max-height: 90vh; overflow-y: auto; }
+.editor-overlay.active { display: flex; justify-content: center; padding: 10px; }
+.editor { background: var(--bg); border-radius: 8px; padding: 12px; width: 100%; max-width: 600px; max-height: 90vh; overflow-y: auto; }
 .editor h2 { margin-bottom: 14px; font-size: 1.1em; }
-.track { background: var(--surface); border-radius: 6px; padding: 10px; margin-bottom: 10px; }
+.track { background: var(--surface); border-radius: 6px; padding: 8px; margin-bottom: 10px; }
 .track h4 { font-size: 0.9em; color: var(--text2); margin-bottom: 6px; display: flex; justify-content: space-between; }
-.step { display: flex; flex-direction: column; gap: 8px; margin-bottom: 8px; padding: 8px; border-radius: 6px; background: rgba(255,255,255,0.03); }
+.step { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; padding: 6px; border-radius: 6px; background: rgba(255,255,255,0.03); }
 .step select, .step input { font-size: 0.85em; padding: 4px 6px; }
-.step-header { display: flex; gap: 6px; align-items: center; }
+.step-header { display: flex; gap: 4px; align-items: center; }
 .step-header select { flex: 1; min-width: 0; }
-.step-controls { display: flex; flex-direction: column; gap: 6px; }
-.step .slider-group { display: flex; align-items: center; gap: 8px; min-width: 0; width: 100%; }
-.step .slider-group .slider-label { width: 60px; flex-shrink: 0; font-size: 0.8em; color: var(--text2); }
+.step-controls { display: flex; flex-direction: column; gap: 4px; }
+.step .slider-group { display: flex; align-items: center; gap: 4px; min-width: 0; width: 100%; }
+.step .slider-group .slider-label { width: 52px; flex-shrink: 0; font-size: 0.8em; color: var(--text2); }
 .step .slider-group input[type=range] { flex: 1; accent-color: var(--accent); }
-.step .slider-group .val { min-width: 32px; text-align: right; font-size: 0.85em; color: var(--text2); }
+.step .slider-group .val { min-width: 28px; text-align: right; font-size: 0.85em; color: var(--text2); }
 .editor-actions { display: flex; gap: 8px; margin-top: 14px; justify-content: flex-end; }
 .step-reorder { display: flex; flex-direction: column; gap: 1px; }
 .step-reorder button { padding: 1px 5px; font-size: 0.7em; line-height: 1; background: var(--surface2); }
@@ -229,7 +229,7 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
       <input type="text" id="settings-device-id" placeholder="(auto-generated UUID)" style="flex:2">
     </div>
   </div>
-  <div class="card">
+  <div class="card" id="card-wifi-sta">
     <h3>WiFi Client (STA)</h3>
     <div class="form-row" style="margin-top:8px">
       <label>SSID</label>
@@ -238,7 +238,7 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
       <input type="password" id="settings-wifi-password" placeholder="(use build default)">
     </div>
   </div>
-  <div class="card">
+  <div class="card" id="card-wifi-ap">
     <h3>WiFi Access Point</h3>
     <div class="form-row" style="margin-top:8px">
       <label style="min-width:auto"><input type="checkbox" id="settings-ap-enabled"> Enable AP (SSID: rfcollars)</label>
@@ -746,15 +746,15 @@ function renderRemotes() {
             oninput="setCollarPref('${esc(c.name)}','duration',this.value);document.getElementById('dur-val-${esc(c.name)}').textContent=this.value+'s'">
           <span class="val" id="dur-val-${esc(c.name)}">${savedDur}s</span>
         </div>
-        <label style="font-size:0.8em;color:var(--text2);white-space:nowrap;cursor:pointer">
-          <input type="checkbox" id="hold-${esc(c.name)}" ${whilePressed ? 'checked' : ''}
-            onchange="toggleWhilePressed('${esc(c.name)}',this.checked)"> While pressed
-        </label>
       </div>
       <div class="controls action-btns" style="margin-top:6px">
         <button class="btn-shock" data-collar="${esc(c.name)}" data-mode="shock" ${rfLocked ? 'disabled' : ''}>Zap</button>
         <button class="btn-vibrate" data-collar="${esc(c.name)}" data-mode="vibrate" ${rfLocked ? 'disabled' : ''}>Vibrate</button>
         <button class="btn-beep" data-collar="${esc(c.name)}" data-mode="beep" ${rfLocked ? 'disabled' : ''}>Beep</button>
+        <label style="font-size:0.8em;color:var(--text2);white-space:nowrap;cursor:pointer;margin-left:auto">
+          <input type="checkbox" id="hold-${esc(c.name)}" ${whilePressed ? 'checked' : ''}
+            onchange="toggleWhilePressed('${esc(c.name)}',this.checked)"> While pressed
+        </label>
       </div>
     `;
     list.appendChild(card);
@@ -1647,6 +1647,9 @@ function saveDeviceSettings() {
 
 function handleDeviceSettings(msg) {
   const s = msg.settings;
+  const hasWifi = msg.has_wifi;
+  document.getElementById('card-wifi-sta').style.display = hasWifi ? '' : 'none';
+  document.getElementById('card-wifi-ap').style.display = hasWifi ? '' : 'none';
   document.getElementById('settings-device-id').value = s.device_id || '';
   document.getElementById('settings-tx-led-pin').value = s.tx_led_pin;
   document.getElementById('settings-rx-led-pin').value = s.rx_led_pin;

@@ -25,7 +25,7 @@ if [[ "$OPT_CLEAN" == true ]]; then
   run_in_env cargo +esp clean
 fi
 
-run_in_env cargo +esp build --release
+run_in_env cargo +esp build --release $CARGO_FEATURES
 
 # Convert ELF to flashable binary (use esptool.py — espflash's conversion is broken for P4)
 idf_python="$(find_idf_python "$project_dir")"

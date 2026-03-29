@@ -26,6 +26,7 @@ use crate::storage::Storage;
 use crate::validation;
 
 const FRONTEND_HTML_GZ: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/frontend.html.gz"));
+const HAS_WIFI: bool = cfg!(has_wifi);
 const MAX_RF_DEBUG_EVENTS: usize = 100;
 const MAX_EVENT_LOG_ENTRIES: usize = 100;
 const RF_STOP_LOCKOUT_MS: u64 = 10_000;
@@ -1320,6 +1321,7 @@ pub(crate) fn process_control_message(
                 &ServerMessage::DeviceSettings {
                     settings,
                     reboot_required: false,
+                    has_wifi: HAS_WIFI,
                 },
             )
             .unwrap()])
@@ -1393,6 +1395,7 @@ pub(crate) fn process_control_message(
                 &ServerMessage::DeviceSettings {
                     settings: settings_to_save,
                     reboot_required,
+                    has_wifi: HAS_WIFI,
                 },
             )
             .unwrap()])

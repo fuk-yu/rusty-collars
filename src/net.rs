@@ -61,126 +61,154 @@ pub fn connect(
     Ok(NetworkHandle::Wifi(wifi))
 }
 
-// --- ESP32-P4: Ethernet via raw ESP-IDF (no WiFi, no modem peripheral) ---
+// --- ESP32-P4: Ethernet via raw ESP-IDF ---
 
 #[cfg(esp32p4)]
+unsafe fn init_p4_ethernet() {
+    use esp_idf_svc::sys::*;
+
+    // Initialize TCP/IP stack and default event loop (required before esp_netif/eth)
+    let err = esp_idf_svc::sys::esp_netif_init();
+    assert_eq!(
+        err,
+        esp_idf_svc::sys::ESP_OK,
+        "esp_netif_init failed: {err}"
+    );
+    let err = esp_idf_svc::sys::esp_event_loop_create_default();
+    // ESP_ERR_INVALID_STATE means it's already created (e.g. by EspSystemEventLoop::take)
+    assert!(
+        err == esp_idf_svc::sys::ESP_OK || err == esp_idf_svc::sys::ESP_ERR_INVALID_STATE,
+        "esp_event_loop_create_default failed: {err}"
+    );
+
+    // Create default Ethernet netif
+    let netif_cfg = esp_netif_config_t {
+        base: &_g_esp_netif_inherent_eth_config,
+        driver: core::ptr::null(),
+        stack: _g_esp_netif_netstack_default_eth,
+    };
+    let netif = esp_netif_new(&netif_cfg);
+    assert!(!netif.is_null(), "esp_netif_new failed");
+
+    // MAC: internal EMAC with default P4 pin config (ETH_ESP32_EMAC_DEFAULT_CONFIG)
+    let emac_config: eth_esp32_emac_config_t = {
+        let mut c: eth_esp32_emac_config_t = core::mem::zeroed();
+        c.__bindgen_anon_1.smi_gpio.mdc_num = 31;
+        c.__bindgen_anon_1.smi_gpio.mdio_num = 52;
+        c.interface = eth_data_interface_t_EMAC_DATA_INTERFACE_RMII;
+        c.clock_config.rmii.clock_mode = emac_rmii_clock_mode_t_EMAC_CLK_EXT_IN;
+        c.clock_config.rmii.clock_gpio = 50;
+        c.dma_burst_len = eth_mac_dma_burst_len_t_ETH_DMA_BURST_LEN_32;
+        c.emac_dataif_gpio.rmii.tx_en_num = 49;
+        c.emac_dataif_gpio.rmii.txd0_num = 34;
+        c.emac_dataif_gpio.rmii.txd1_num = 35;
+        c.emac_dataif_gpio.rmii.crs_dv_num = 28;
+        c.emac_dataif_gpio.rmii.rxd0_num = 29;
+        c.emac_dataif_gpio.rmii.rxd1_num = 30;
+        c.clock_config_out_in.rmii.clock_mode = emac_rmii_clock_mode_t_EMAC_CLK_EXT_IN;
+        c.clock_config_out_in.rmii.clock_gpio = -1;
+        c
+    };
+
+    // ETH_MAC_DEFAULT_CONFIG
+    let mac_config = eth_mac_config_t {
+        sw_reset_timeout_ms: 100,
+        rx_task_stack_size: 4096,
+        rx_task_prio: 15,
+        flags: 0,
+    };
+
+    let mac = esp_eth_mac_new_esp32(&emac_config, &mac_config);
+    assert!(!mac.is_null(), "esp_eth_mac_new_esp32 failed");
+
+    // PHY: IP101 at address 1, RST on GPIO51 (ESP32-P4-Function-EV defaults)
+    let phy_config = eth_phy_config_t {
+        phy_addr: 1,
+        reset_timeout_ms: 100,
+        autonego_timeout_ms: 4000,
+        reset_gpio_num: 51,
+        ..Default::default()
+    };
+    let phy = esp_eth_phy_new_ip101(&phy_config);
+    assert!(!phy.is_null(), "esp_eth_phy_new_ip101 failed");
+
+    // Install Ethernet driver
+    let eth_config = esp_eth_config_t {
+        mac,
+        phy,
+        check_link_period_ms: 2000,
+        ..Default::default()
+    };
+    let mut eth_handle: esp_eth_handle_t = core::ptr::null_mut();
+    let err = esp_eth_driver_install(&eth_config, &mut eth_handle);
+    assert_eq!(err, ESP_OK, "esp_eth_driver_install failed: {err}");
+
+    // Attach Ethernet to netif
+    let glue = esp_eth_new_netif_glue(eth_handle);
+    let err = esp_netif_attach(netif, glue as *mut _);
+    assert_eq!(err, ESP_OK, "esp_netif_attach failed: {err}");
+
+    // Start Ethernet
+    let err = esp_eth_start(eth_handle);
+    assert_eq!(err, ESP_OK, "esp_eth_start failed: {err}");
+
+    info!("Ethernet started, waiting for IP via DHCP...");
+
+    // Poll until DHCP assigns an IP (up to 30s)
+    let start = esp_timer_get_time();
+    loop {
+        let mut ip_info: esp_netif_ip_info_t = core::mem::zeroed();
+        if esp_netif_get_ip_info(netif, &mut ip_info) == ESP_OK && ip_info.ip.addr != 0 {
+            let ip = ip_info.ip.addr;
+            info!(
+                "Ethernet connected! IP: {}.{}.{}.{}",
+                ip & 0xFF,
+                (ip >> 8) & 0xFF,
+                (ip >> 16) & 0xFF,
+                (ip >> 24) & 0xFF
+            );
+            break;
+        }
+        let elapsed_us = esp_timer_get_time() - start;
+        assert!(elapsed_us < 30_000_000, "Ethernet DHCP timeout (30s)");
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+}
+
+// --- ESP32-P4-ETH: Ethernet only (no WiFi, no modem peripheral) ---
+
+#[cfg(all(esp32p4, not(has_wifi)))]
 pub fn connect(
     _sys_loop: EspSystemEventLoop,
     _nvs: EspDefaultNvsPartition,
     _settings: &DeviceSettings,
 ) -> Result<NetworkHandle> {
-    use esp_idf_svc::sys::*;
-
     info!("ESP32-P4: starting Ethernet...");
+    unsafe { init_p4_ethernet() };
+    Ok(NetworkHandle::Eth)
+}
 
-    unsafe {
-        // Initialize TCP/IP stack and default event loop (required before esp_netif/eth)
-        let err = esp_idf_svc::sys::esp_netif_init();
-        assert_eq!(
-            err,
-            esp_idf_svc::sys::ESP_OK,
-            "esp_netif_init failed: {err}"
-        );
-        let err = esp_idf_svc::sys::esp_event_loop_create_default();
-        // ESP_ERR_INVALID_STATE means it's already created (e.g. by EspSystemEventLoop::take)
-        assert!(
-            err == esp_idf_svc::sys::ESP_OK || err == esp_idf_svc::sys::ESP_ERR_INVALID_STATE,
-            "esp_event_loop_create_default failed: {err}"
-        );
+// --- ESP32-P4-WiFi: Ethernet + WiFi via companion ESP32-C6 (esp_wifi_remote) ---
+// The P4 chip has no built-in radio; WiFi is provided by a companion ESP32-C6
+// connected over SPI, using the esp_wifi_remote component. The standard esp-idf-svc
+// WiFi types (EspWifi, Modem) are not available on P4 — WiFi remote init will use
+// raw ESP-IDF calls once hardware is available for testing.
 
-        // Create default Ethernet netif
-        let netif_cfg = esp_netif_config_t {
-            base: &_g_esp_netif_inherent_eth_config,
-            driver: core::ptr::null(),
-            stack: _g_esp_netif_netstack_default_eth,
-        };
-        let netif = esp_netif_new(&netif_cfg);
-        assert!(!netif.is_null(), "esp_netif_new failed");
+#[cfg(all(esp32p4, has_wifi))]
+pub fn connect(
+    _sys_loop: EspSystemEventLoop,
+    _nvs: EspDefaultNvsPartition,
+    _settings: &DeviceSettings,
+) -> Result<NetworkHandle> {
+    info!("ESP32-P4-WiFi: starting Ethernet...");
+    unsafe { init_p4_ethernet() };
 
-        // MAC: internal EMAC with default P4 pin config (ETH_ESP32_EMAC_DEFAULT_CONFIG)
-        let emac_config: eth_esp32_emac_config_t = {
-            let mut c: eth_esp32_emac_config_t = core::mem::zeroed();
-            c.__bindgen_anon_1.smi_gpio.mdc_num = 31;
-            c.__bindgen_anon_1.smi_gpio.mdio_num = 52;
-            c.interface = eth_data_interface_t_EMAC_DATA_INTERFACE_RMII;
-            c.clock_config.rmii.clock_mode = emac_rmii_clock_mode_t_EMAC_CLK_EXT_IN;
-            c.clock_config.rmii.clock_gpio = 50;
-            c.dma_burst_len = eth_mac_dma_burst_len_t_ETH_DMA_BURST_LEN_32;
-            c.emac_dataif_gpio.rmii.tx_en_num = 49;
-            c.emac_dataif_gpio.rmii.txd0_num = 34;
-            c.emac_dataif_gpio.rmii.txd1_num = 35;
-            c.emac_dataif_gpio.rmii.crs_dv_num = 28;
-            c.emac_dataif_gpio.rmii.rxd0_num = 29;
-            c.emac_dataif_gpio.rmii.rxd1_num = 30;
-            c.clock_config_out_in.rmii.clock_mode = emac_rmii_clock_mode_t_EMAC_CLK_EXT_IN;
-            c.clock_config_out_in.rmii.clock_gpio = -1;
-            c
-        };
-
-        // ETH_MAC_DEFAULT_CONFIG
-        let mac_config = eth_mac_config_t {
-            sw_reset_timeout_ms: 100,
-            rx_task_stack_size: 4096,
-            rx_task_prio: 15,
-            flags: 0,
-        };
-
-        let mac = esp_eth_mac_new_esp32(&emac_config, &mac_config);
-        assert!(!mac.is_null(), "esp_eth_mac_new_esp32 failed");
-
-        // PHY: IP101 at address 1, RST on GPIO51 (ESP32-P4-Function-EV defaults)
-        let phy_config = eth_phy_config_t {
-            phy_addr: 1,
-            reset_timeout_ms: 100,
-            autonego_timeout_ms: 4000,
-            reset_gpio_num: 51,
-            ..Default::default()
-        };
-        let phy = esp_eth_phy_new_ip101(&phy_config);
-        assert!(!phy.is_null(), "esp_eth_phy_new_ip101 failed");
-
-        // Install Ethernet driver
-        let eth_config = esp_eth_config_t {
-            mac,
-            phy,
-            check_link_period_ms: 2000,
-            ..Default::default()
-        };
-        let mut eth_handle: esp_eth_handle_t = core::ptr::null_mut();
-        let err = esp_eth_driver_install(&eth_config, &mut eth_handle);
-        assert_eq!(err, ESP_OK, "esp_eth_driver_install failed: {err}");
-
-        // Attach Ethernet to netif
-        let glue = esp_eth_new_netif_glue(eth_handle);
-        let err = esp_netif_attach(netif, glue as *mut _);
-        assert_eq!(err, ESP_OK, "esp_netif_attach failed: {err}");
-
-        // Start Ethernet
-        let err = esp_eth_start(eth_handle);
-        assert_eq!(err, ESP_OK, "esp_eth_start failed: {err}");
-
-        info!("Ethernet started, waiting for IP via DHCP...");
-
-        // Poll until DHCP assigns an IP (up to 30s)
-        let start = esp_timer_get_time();
-        loop {
-            let mut ip_info: esp_netif_ip_info_t = core::mem::zeroed();
-            if esp_netif_get_ip_info(netif, &mut ip_info) == ESP_OK && ip_info.ip.addr != 0 {
-                let ip = ip_info.ip.addr;
-                info!(
-                    "Ethernet connected! IP: {}.{}.{}.{}",
-                    ip & 0xFF,
-                    (ip >> 8) & 0xFF,
-                    (ip >> 16) & 0xFF,
-                    (ip >> 24) & 0xFF
-                );
-                break;
-            }
-            let elapsed_us = esp_timer_get_time() - start;
-            assert!(elapsed_us < 30_000_000, "Ethernet DHCP timeout (30s)");
-            std::thread::sleep(std::time::Duration::from_millis(250));
-        }
-    }
+    // TODO: Initialize WiFi via esp_wifi_remote (companion ESP32-C6 over SPI).
+    // This requires:
+    // 1. The companion C6 running esp_wifi_remote slave firmware
+    // 2. Correct SPI pin configuration in sdkconfig.defaults.esp32p4-wifi
+    // 3. Raw esp_wifi_* API calls (P4 HAL does not provide a Modem peripheral)
+    info!("ESP32-P4-WiFi: WiFi remote support not yet implemented, running Ethernet only");
 
     Ok(NetworkHandle::Eth)
 }

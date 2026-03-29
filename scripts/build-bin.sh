@@ -24,7 +24,7 @@ if [[ "$OPT_CLEAN" == true ]]; then
   run_in_env cargo +esp clean --target "$TARGET_TRIPLE"
 fi
 
-run_in_env cargo +esp build --release
+run_in_env cargo +esp build --release $CARGO_FEATURES
 
 FW_BIN="$project_dir/target/$TARGET_TRIPLE/release/rusty-collars.bin"
 idf_python="$(find_idf_python "$project_dir")"

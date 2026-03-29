@@ -16,13 +16,15 @@
 target_info_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$target_info_dir/esp-idf-env.sh"
 
-SUPPORTED_TARGETS="esp32 esp32c6 esp32p4"
+SUPPORTED_TARGETS="esp32 esp32c6 esp32p4 esp32p4-wifi"
 
 resolve_target() {
-  TARGET_NAME="${1:?Usage: resolve_target <esp32|esp32c6|esp32p4>}"
+  TARGET_NAME="${1:?Usage: resolve_target <esp32|esp32c6|esp32p4|esp32p4-wifi>}"
 
   ESPFLASH_FLASH_ARGS=""
   ESPFLASH_MONITOR_ARGS=""
+  CARGO_FEATURES=""
+  CARGO_CONFIG_SOURCE=""
 
   case "$TARGET_NAME" in
     esp32)
@@ -48,6 +50,16 @@ resolve_target() {
       BOOTLOADER_OFFSET=0x2000
       PARTITION_TABLE="partitions-16mb.csv"
       ;;
+    esp32p4-wifi)
+      TARGET_TRIPLE="riscv32imafc-esp-espidf"
+      TARGET_CHIP="esp32p4"
+      ESPFLASH_FLASH_ARGS="--no-stub"
+      ESPFLASH_MONITOR_ARGS="--no-stub"
+      BOOTLOADER_OFFSET=0x2000
+      PARTITION_TABLE="partitions-16mb.csv"
+      CARGO_FEATURES="--features p4-wifi"
+      CARGO_CONFIG_SOURCE="esp32p4"
+      ;;
     *)
       echo "Unknown target: $TARGET_NAME (supported: $SUPPORTED_TARGETS)" >&2
       exit 1
@@ -64,7 +76,8 @@ activate_target() {
   local project_dir="${1:?activate_target requires project dir}"
   resolve_target "${2:?activate_target requires target name}"
 
-  cp "$project_dir/.cargo/config-${TARGET_NAME}.toml" "$project_dir/.cargo/config.toml"
+  local config_source="${CARGO_CONFIG_SOURCE:-$TARGET_NAME}"
+  cp "$project_dir/.cargo/config-${config_source}.toml" "$project_dir/.cargo/config.toml"
   cp "$project_dir/sdkconfig.defaults.${TARGET_NAME}" "$project_dir/sdkconfig.defaults"
   cp "$project_dir/${PARTITION_TABLE}" "$project_dir/partitions.csv"
   cat > "$project_dir/sdkconfig.defaults.partitions" <<EOF
@@ -119,7 +132,7 @@ _target_compiler_path() {
       bindir="$(find_toolchain_bin_dir "$project_dir" xtensa-esp-elf)"
       compiler="$bindir/xtensa-esp-elf-gcc"
       ;;
-    esp32c6|esp32p4)
+    esp32c6|esp32p4|esp32p4-wifi)
       bindir="$(find_toolchain_bin_dir "$project_dir" riscv32-esp-elf)"
       compiler="$bindir/riscv32-esp-elf-gcc"
       ;;
