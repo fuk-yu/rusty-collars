@@ -522,24 +522,30 @@ impl<'a> EspWebSocketClient<'a> {
             return Err(EspError::from_infallible::<ESP_FAIL>().into());
         }
 
-        let client = Self {
-            handle,
-            timeout: t.0,
-            _callback: boxed_raw_callback,
-        };
-
-        esp!(unsafe {
+        // Complete all fallible initialization before constructing Self.
+        // This avoids triggering Drop on a partially-initialized client.
+        if let Err(e) = esp!(unsafe {
             esp_websocket_register_events(
-                client.handle,
+                handle,
                 esp_websocket_event_id_t_WEBSOCKET_EVENT_ANY,
                 Some(Self::handle),
                 unsafe_callback.as_ptr(),
             )
-        })?;
+        }) {
+            unsafe { esp_websocket_client_destroy(handle) };
+            return Err(e.into());
+        }
 
-        esp!(unsafe { esp_websocket_client_start(handle) })?;
+        if let Err(e) = esp!(unsafe { esp_websocket_client_start(handle) }) {
+            unsafe { esp_websocket_client_destroy(handle) };
+            return Err(e.into());
+        }
 
-        Ok(client)
+        Ok(Self {
+            handle,
+            timeout: t.0,
+            _callback: boxed_raw_callback,
+        })
     }
 
     pub fn send(&mut self, frame_type: FrameType, frame_data: &[u8]) -> Result<(), EspError> {
@@ -620,13 +626,16 @@ impl<'a> EspWebSocketClient<'a> {
 
 impl Drop for EspWebSocketClient<'_> {
     fn drop(&mut self) {
-        // The ESP websocket client can report ESP_FAIL here if the transport has already
-        // torn down asynchronously, or if esp_websocket_client_start() failed during
-        // construction. Dropping the wrapper must not abort the application.
-        let _ = esp!(unsafe { esp_websocket_client_close(self.handle, self.timeout) });
-        let _ = esp!(unsafe { esp_websocket_client_destroy(self.handle) });
+        // close() can return ESP_FAIL if the transport tore down asynchronously;
+        // destroy() should not fail for a fully-initialized client, but we must
+        // never panic in Drop (esp-idf targets use panic=abort).
+        if let Err(e) = esp!(unsafe { esp_websocket_client_close(self.handle, self.timeout) }) {
+            log::warn!("WebSocket close failed during drop: {e:?}");
+        }
 
-        // timeout and callback dropped automatically
+        if let Err(e) = esp!(unsafe { esp_websocket_client_destroy(self.handle) }) {
+            log::warn!("WebSocket destroy failed during drop: {e:?}");
+        }
     }
 }
 
