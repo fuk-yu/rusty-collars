@@ -10,22 +10,49 @@ use crate::rf_timing::{
 
 const MICROS_PER_MILLISECOND: u64 = 1_000;
 
+use crate::protocol::Distribution;
+
 /// Resolves random ranges to concrete values for preset step execution.
 pub trait StepResolver {
-    fn resolve_duration(&mut self, min: u32, max: u32) -> u32;
-    fn resolve_intensity(&mut self, min: u8, max: u8) -> u8;
+    fn resolve_duration(&mut self, min: u32, max: u32, distribution: Distribution) -> u32;
+    fn resolve_intensity(&mut self, min: u8, max: u8, distribution: Distribution) -> u8;
 }
 
 /// Uses midpoint of range — deterministic, used for preview.
 pub struct MidpointResolver;
 
 impl StepResolver for MidpointResolver {
-    fn resolve_duration(&mut self, min: u32, max: u32) -> u32 {
+    fn resolve_duration(&mut self, min: u32, max: u32, _distribution: Distribution) -> u32 {
         (min + max) / 2
     }
-    fn resolve_intensity(&mut self, min: u8, max: u8) -> u8 {
+    fn resolve_intensity(&mut self, min: u8, max: u8, _distribution: Distribution) -> u8 {
         ((min as u16 + max as u16) / 2) as u8
     }
+}
+
+/// Resolve all random ranges in a preset to concrete values using the given resolver.
+/// Returns a new preset with `intensity_max` and `duration_max_ms` cleared (all fixed).
+pub fn resolve_preset(preset: &Preset, resolver: &mut dyn StepResolver) -> Preset {
+    let mut resolved = preset.clone();
+    for track in &mut resolved.tracks {
+        for step in &mut track.steps {
+            if let Some(max) = step.duration_max_ms {
+                if max > step.duration_ms {
+                    step.duration_ms = resolver.resolve_duration(step.duration_ms, max, step.duration_distribution.unwrap_or_default());
+                }
+                step.duration_max_ms = None;
+                step.duration_distribution = None;
+            }
+            if let Some(max) = step.intensity_max {
+                if max > step.intensity && step.mode.has_intensity() {
+                    step.intensity = resolver.resolve_intensity(step.intensity, max, step.intensity_distribution.unwrap_or_default());
+                }
+                step.intensity_max = None;
+                step.intensity_distribution = None;
+            }
+        }
+    }
+    resolved
 }
 
 /// A single scheduled RF transmission event.
@@ -188,13 +215,13 @@ fn collect_preset_events(
             // Resolve random ranges to concrete values
             let duration_ms = match step.duration_max_ms {
                 Some(max) if max > step.duration_ms => {
-                    resolver.resolve_duration(step.duration_ms, max)
+                    resolver.resolve_duration(step.duration_ms, max, step.duration_distribution.unwrap_or_default())
                 }
                 _ => step.duration_ms,
             };
             let intensity = match step.intensity_max {
                 Some(max) if max > step.intensity && step.mode.has_intensity() => {
-                    resolver.resolve_intensity(step.intensity, max)
+                    resolver.resolve_intensity(step.intensity, max, step.intensity_distribution.unwrap_or_default())
                 }
                 _ => step.intensity,
             };
@@ -401,6 +428,8 @@ mod tests {
                         duration_ms: 500,
                         intensity_max: None,
                         duration_max_ms: None,
+                        intensity_distribution: None,
+                        duration_distribution: None,
                     }],
                 },
                 crate::protocol::PresetTrack {
@@ -411,6 +440,8 @@ mod tests {
                         duration_ms: 500,
                         intensity_max: None,
                         duration_max_ms: None,
+                        intensity_distribution: None,
+                        duration_distribution: None,
                     }],
                 },
             ],
@@ -445,6 +476,8 @@ mod tests {
                         duration_ms: 500,
                         intensity_max: None,
                         duration_max_ms: None,
+                        intensity_distribution: None,
+                        duration_distribution: None,
                     }],
                 },
                 crate::protocol::PresetTrack {
@@ -455,6 +488,8 @@ mod tests {
                         duration_ms: 500,
                         intensity_max: None,
                         duration_max_ms: None,
+                        intensity_distribution: None,
+                        duration_distribution: None,
                     }],
                 },
             ],

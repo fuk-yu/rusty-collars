@@ -16,9 +16,9 @@ use crate::async_runtime::{AsyncIoSocket, AsyncIoTimer};
 use crate::build_info::APP_VERSION;
 use crate::led::Led;
 use crate::protocol::{
-    ClientMessage, Collar, CommandMode, DeviceSettings, EventLogEntry, EventLogEntryKind,
-    EventSource, ExportData, Preset, RemoteControlStatus, RfDebugFrame, ServerMessage,
-    MAX_INTENSITY,
+    ClientMessage, Collar, CommandMode, DeviceSettings, Distribution, EventLogEntry,
+    EventLogEntryKind, EventSource, ExportData, Preset, RemoteControlStatus, RfDebugFrame,
+    ServerMessage, MAX_INTENSITY,
 };
 use crate::rf::{RfReceiver, RfTransmitter};
 use crate::scheduling::{self, PresetEvent, StepResolver};
@@ -45,14 +45,47 @@ struct RandomResolver<'a> {
 }
 
 impl StepResolver for RandomResolver<'_> {
-    fn resolve_duration(&mut self, min: u32, max: u32) -> u32 {
-        let min_steps = min / 500;
-        let max_steps = max / 500;
-        self.rng.random_range(min_steps..=max_steps) * 500
+    fn resolve_duration(&mut self, min: u32, max: u32, distribution: Distribution) -> u32 {
+        resolve_random_duration(self.rng, min, max, distribution)
     }
-    fn resolve_intensity(&mut self, min: u8, max: u8) -> u8 {
-        self.rng.random_range(min..=max)
+    fn resolve_intensity(&mut self, min: u8, max: u8, distribution: Distribution) -> u8 {
+        resolve_random_u8(self.rng, min, max, distribution)
     }
+}
+
+/// Sample a random duration in [min, max], snapped to 500ms steps.
+fn resolve_random_duration(rng: &mut SmallRng, min: u32, max: u32, distribution: Distribution) -> u32 {
+    let min_steps = min / 500;
+    let max_steps = max / 500;
+    match distribution {
+        Distribution::Uniform => rng.random_range(min_steps..=max_steps) * 500,
+        Distribution::Gaussian => {
+            let v = gaussian_sample(rng, min_steps as f32, max_steps as f32);
+            (v.round().clamp(min_steps as f32, max_steps as f32) as u32) * 500
+        }
+    }
+}
+
+/// Sample a random u8 in [min, max].
+fn resolve_random_u8(rng: &mut SmallRng, min: u8, max: u8, distribution: Distribution) -> u8 {
+    match distribution {
+        Distribution::Uniform => rng.random_range(min..=max),
+        Distribution::Gaussian => {
+            let v = gaussian_sample(rng, min as f32, max as f32);
+            v.round().clamp(min as f32, max as f32) as u8
+        }
+    }
+}
+
+/// Box-Muller gaussian sample centered on the midpoint of [lo, hi].
+/// sigma = (hi - lo) / 4, so ~95% of samples fall within [lo, hi].
+fn gaussian_sample(rng: &mut SmallRng, lo: f32, hi: f32) -> f32 {
+    let mean = (lo + hi) / 2.0;
+    let sigma = (hi - lo) / 4.0;
+    let u1: f32 = rng.random::<f32>().max(f32::EPSILON);
+    let u2: f32 = rng.random::<f32>();
+    let z = (-2.0 * u1.ln()).sqrt() * (2.0 * core::f32::consts::PI * u2).cos();
+    mean + sigma * z
 }
 
 #[derive(Clone)]
@@ -98,6 +131,8 @@ struct ManualActionSpec {
     intensity_max: Option<u8>,
     duration_ms: Option<u32>,
     duration_max_ms: Option<u32>,
+    intensity_distribution: Distribution,
+    duration_distribution: Distribution,
     source: EventSource,
 }
 
@@ -884,6 +919,8 @@ fn start_manual_action(
     intensity_max: Option<u8>,
     duration_ms: Option<u32>,
     duration_max_ms: Option<u32>,
+    intensity_distribution: Distribution,
+    duration_distribution: Distribution,
     source: EventSource,
     owner: Option<ActionOwner>,
     cancel_on_disconnect: bool,
@@ -908,6 +945,8 @@ fn start_manual_action(
         intensity_max,
         duration_ms,
         duration_max_ms,
+        intensity_distribution,
+        duration_distribution,
         source,
     };
 
@@ -948,7 +987,8 @@ fn run_manual_action(spec: ManualActionSpec, ctx: &AppCtx, run_id: u32, cancel: 
     // Resolve random intensity once at action start
     let actual_intensity = match spec.intensity_max {
         Some(max) if max > spec.intensity && spec.mode.has_intensity() => {
-            ctx.rng.lock().unwrap().random_range(spec.intensity..=max)
+            let mut rng = ctx.rng.lock().unwrap();
+            resolve_random_u8(&mut *rng, spec.intensity, max, spec.intensity_distribution)
         }
         _ => spec.intensity,
     };
@@ -957,9 +997,7 @@ fn run_manual_action(spec: ManualActionSpec, ctx: &AppCtx, run_id: u32, cancel: 
     let actual_duration_ms: Option<u32> = match (spec.duration_ms, spec.duration_max_ms) {
         (Some(min), Some(max)) if max > min => {
             let mut rng = ctx.rng.lock().unwrap();
-            let min_steps = min / 500;
-            let max_steps = max / 500;
-            Some(rng.random_range(min_steps..=max_steps) * 500)
+            Some(resolve_random_duration(&mut *rng, min, max, spec.duration_distribution))
         }
         (dur, _) => dur,
     };
@@ -1084,6 +1122,8 @@ pub(crate) fn process_control_message(
             duration_ms,
             intensity_max,
             duration_max_ms,
+            intensity_distribution,
+            duration_distribution,
         } => {
             start_manual_action(
                 ctx,
@@ -1093,6 +1133,8 @@ pub(crate) fn process_control_message(
                 intensity_max,
                 Some(duration_ms),
                 duration_max_ms,
+                intensity_distribution.unwrap_or_default(),
+                duration_distribution.unwrap_or_default(),
                 event_source(origin),
                 owner,
                 false,
@@ -1105,6 +1147,7 @@ pub(crate) fn process_control_message(
             mode,
             intensity,
             intensity_max,
+            intensity_distribution,
         } => {
             start_manual_action(
                 ctx,
@@ -1114,6 +1157,8 @@ pub(crate) fn process_control_message(
                 intensity_max,
                 None,
                 None,
+                intensity_distribution.unwrap_or_default(),
+                Distribution::default(),
                 event_source(origin),
                 owner,
                 true,
@@ -1287,7 +1332,7 @@ pub(crate) fn process_control_message(
 
         ClientMessage::RunPreset { name } => {
             let source = event_source(origin);
-            let (preset_name, events, run_id) = {
+            let (preset_name, resolved_preset_for_log, events, run_id) = {
                 let mut d = ctx.domain.lock().unwrap();
                 if rf_lockout_remaining_ms(&d) > 0 {
                     return Err("Transmissions locked after STOP".to_string());
@@ -1299,15 +1344,26 @@ pub(crate) fn process_control_message(
                 // Validate with midpoint values (ensures minimum durations are schedulable)
                 validation::validate_preset(&preset, &d.collars)
                     .map_err(|err| err.to_string())?;
-                // Schedule with random resolution for actual execution
+                // Resolve random ranges into a concrete preset copy, then schedule from that
+                let has_random = preset
+                    .tracks
+                    .iter()
+                    .any(|t| t.steps.iter().any(|s| s.has_random()));
                 let mut rng = ctx.rng.lock().unwrap();
                 let mut resolver = RandomResolver { rng: &mut *rng };
+                let resolved = scheduling::resolve_preset(&preset, &mut resolver);
+                // Schedule the resolved (concrete) preset — no ranges left, MidpointResolver is fine
                 let events =
-                    scheduling::schedule_preset_events(&preset, &d.collars, &mut resolver)
+                    scheduling::schedule_preset_events(&resolved, &d.collars, &mut scheduling::MidpointResolver)
                         .map_err(|err| err.to_string())?;
+                let resolved_for_log = if has_random {
+                    Some(resolved)
+                } else {
+                    None
+                };
                 let run_id = ctx.preset_run_id.fetch_add(1, Ordering::SeqCst) + 1;
                 d.preset_name = Some(name.clone());
-                (preset.name.clone(), events, run_id)
+                (preset.name.clone(), resolved_for_log, events, run_id)
             };
 
             let ctx2 = ctx.clone();
@@ -1334,6 +1390,7 @@ pub(crate) fn process_control_message(
                 source,
                 EventLogEntryKind::PresetRun {
                     preset_name: preset_name.clone(),
+                    resolved_preset: resolved_preset_for_log,
                 },
             );
 

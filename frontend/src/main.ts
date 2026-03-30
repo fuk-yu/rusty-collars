@@ -14,7 +14,7 @@ const WS_RECONNECT_MAX_DELAY_MS = 5000;
 const RF_LOCKOUT_TICK_MS = 100;
 const WS_PING_INTERVAL_MS = 1000;
 const WS_PING_TIMEOUT_MS = 3000;
-const MODE_EMOJI = { shock: '\u26A1', vibrate: '\u3030\uFE0F', beep: '\uD83D\uDD14', pause: '\u23F8\uFE0F' };
+const MODE_EMOJI = { shock: '\u26A1', vibrate: '\u3030\uFE0F', beep: '\uD83D\uDD0A', pause: '\u23F8\uFE0F' };
 const MODE_LABEL = { shock: 'Shock', vibrate: 'Vibrate', beep: 'Beep', pause: 'Pause' };
 
 // === State ===
@@ -349,8 +349,8 @@ function renderRemotes() {
     const durMin = getCollarPref(c.name, 'durationMin', '1');
     const durMax = getCollarPref(c.name, 'durationMax', '5');
 
-    const intensityValText = intensityMode === 'random' ? levelMin + '-' + levelMax : savedLevel;
-    const durationValText = durationMode === 'random' ? durMin + '-' + durMax + 's' : savedDur + 's';
+    const intensityValText = intensityMode !== 'fixed' ? levelMin + '-' + levelMax : savedLevel;
+    const durationValText = (durationMode === 'random' || durationMode === 'gaussian') ? durMin + '-' + durMax + 's' : savedDur + 's';
 
     card.innerHTML = `
       <h3>
@@ -363,7 +363,7 @@ function renderRemotes() {
         <div class="slider-group">
           <label style="font-size:0.8em;color:var(--text2)">Level</label>
           <input type="range" min="0" max="99" value="${savedLevel}" id="slider-${name}"
-            ${intensityMode === 'random' ? 'style="display:none"' : ''}
+            ${intensityMode !== 'fixed' ? 'style="display:none"' : ''}
             oninput="setCollarPref('${name}','level',this.value);document.getElementById('val-${name}').textContent=this.value">
           <div class="range-slider" id="range-intensity-${name}" ${intensityMode === 'fixed' ? 'style="display:none"' : ''}>
             <input type="range" class="range-min" min="0" max="99" value="${levelMin}" oninput="updateRangeMin('intensity','${name}',this)">
@@ -377,9 +377,9 @@ function renderRemotes() {
           <label style="font-size:0.8em;color:var(--text2)">Duration</label>
           <input type="range" min="0.5" max="10" step="0.5" value="${savedDur}"
             id="dur-slider-${name}"
-            ${durationMode === 'random' ? 'style="display:none"' : ''}
+            ${durationMode === 'random' || durationMode === 'gaussian' ? 'style="display:none"' : ''}
             oninput="setCollarPref('${name}','duration',this.value);document.getElementById('dur-val-${name}').textContent=this.value+'s'">
-          <div class="range-slider" id="range-duration-${name}" ${durationMode !== 'random' ? 'style="display:none"' : ''}>
+          <div class="range-slider" id="range-duration-${name}" ${durationMode !== 'random' && durationMode !== 'gaussian' ? 'style="display:none"' : ''}>
             <input type="range" class="range-min" min="0.5" max="10" step="0.5" value="${durMin}" oninput="updateRangeMin('duration','${name}',this)">
             <input type="range" class="range-max" min="0.5" max="10" step="0.5" value="${durMax}" oninput="updateRangeMax('duration','${name}',this)">
           </div>
@@ -392,13 +392,15 @@ function renderRemotes() {
         <button class="btn-beep" data-collar="${name}" data-mode="beep" ${rfLocked ? 'disabled' : ''}>Beep</button>
         <span style="flex:1"></span>
         <select class="mode-select" id="intensity-mode-${name}" onchange="updateIntensityMode('${name}',this.value)">
-          <option value="fixed" ${intensityMode === 'fixed' ? 'selected' : ''}>Lvl: Fixed</option>
-          <option value="random" ${intensityMode === 'random' ? 'selected' : ''}>Lvl: Random</option>
+          <option value="fixed" ${intensityMode === 'fixed' ? 'selected' : ''}>\uD83D\uDCC8 Fixed</option>
+          <option value="random" ${intensityMode === 'random' ? 'selected' : ''}>\uD83D\uDCC8 Random</option>
+          <option value="gaussian" ${intensityMode === 'gaussian' ? 'selected' : ''}>\uD83D\uDCC8 Gaussian</option>
         </select>
         <select class="mode-select" id="duration-mode-${name}" onchange="updateDurationMode('${name}',this.value)">
-          <option value="fixed" ${durationMode === 'fixed' ? 'selected' : ''}>Dur: Fixed</option>
-          <option value="held" ${durationMode === 'held' ? 'selected' : ''}>Dur: Held</option>
-          <option value="random" ${durationMode === 'random' ? 'selected' : ''}>Dur: Random</option>
+          <option value="fixed" ${durationMode === 'fixed' ? 'selected' : ''}>\u23F1 Fixed</option>
+          <option value="held" ${durationMode === 'held' ? 'selected' : ''}>\u23F1 Held</option>
+          <option value="random" ${durationMode === 'random' ? 'selected' : ''}>\u23F1 Random</option>
+          <option value="gaussian" ${durationMode === 'gaussian' ? 'selected' : ''}>\u23F1 Gaussian</option>
         </select>
       </div>
     `;
@@ -482,17 +484,23 @@ function setupTimedButton(btn: HTMLButtonElement) {
 
     const msg: any = { type: 'run_action', collar_name: collar, mode };
 
-    if (intensityMode === 'random') {
+    if (intensityMode === 'random' || intensityMode === 'gaussian') {
       msg.intensity = parseInt(getCollarPref(collar, 'levelMin', '10'));
       msg.intensity_max = parseInt(getCollarPref(collar, 'levelMax', '60'));
+      if (intensityMode === 'gaussian') {
+        msg.intensity_distribution = 'gaussian';
+      }
     } else {
       const slider = document.getElementById('slider-' + collar) as HTMLInputElement | null;
       msg.intensity = slider ? parseInt(slider.value) : 30;
     }
 
-    if (durationMode === 'random') {
+    if (durationMode === 'random' || durationMode === 'gaussian') {
       msg.duration_ms = Math.round(parseFloat(getCollarPref(collar, 'durationMin', '1')) * 1000);
       msg.duration_max_ms = Math.round(parseFloat(getCollarPref(collar, 'durationMax', '5')) * 1000);
+      if (durationMode === 'gaussian') {
+        msg.duration_distribution = 'gaussian';
+      }
     } else {
       const durSlider = document.getElementById('dur-slider-' + collar) as HTMLInputElement | null;
       const durationSec = durSlider ? parseFloat(durSlider.value) : 2;
@@ -1171,8 +1179,12 @@ function formatEventLogBody(entry: any) {
       const intensity = entry.intensity == null ? '' : ` @ ${entry.intensity}%`;
       return `${describeMode(entry.mode)} ${entry.collar_name} ${duration}${intensity}`;
     }
-    case 'preset_run':
-      return `Preset ${entry.preset_name} started`;
+    case 'preset_run': {
+      // Use resolved_preset (actual random picks) if available, else look up from state
+      const preset = entry.resolved_preset ?? state.presets.find((p: any) => p.name === entry.preset_name);
+      const summary = preset ? ` (${describePresetSummary(preset)})` : '';
+      return `Preset ${entry.preset_name} started${summary}`;
+    }
     case 'ntp_sync':
       return `NTP sync via ${entry.server}`;
     case 'remote_control_connection':
@@ -1208,9 +1220,12 @@ function setupHoldButton(btn: HTMLButtonElement) {
     const mode = btn.dataset.mode;
     const intensityMode = getCollarPref(collar, 'intensityMode', 'fixed');
     const msg: any = { collar_name: collar, mode };
-    if (intensityMode === 'random') {
+    if (intensityMode === 'random' || intensityMode === 'gaussian') {
       msg.intensity = parseInt(getCollarPref(collar, 'levelMin', '10'));
       msg.intensity_max = parseInt(getCollarPref(collar, 'levelMax', '60'));
+      if (intensityMode === 'gaussian') {
+        msg.intensity_distribution = 'gaussian';
+      }
     } else {
       const slider = document.getElementById('slider-' + collar) as HTMLInputElement | null;
       msg.intensity = slider ? parseInt(slider.value) : 30;
@@ -1243,11 +1258,31 @@ function describeMode(mode: string) {
   return (MODE_LABEL as any)[mode] || mode;
 }
 
+function describePresetSummary(preset: any): string {
+  return preset.tracks.map((t: any) => {
+    const steps = t.steps.map((s: any) => describePresetStep(s)).join(' > ');
+    return `${t.collar_name}: ${steps}`;
+  }).join(' | ');
+}
+
+function fmtDurMs(ms: number) {
+  return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`;
+}
+
 function describePresetStep(step: any) {
   const icon = (MODE_EMOJI as any)[step.mode] || step.mode;
-  const dur = step.duration_ms >= 1000 ? `${(step.duration_ms / 1000).toFixed(1)}s` : `${step.duration_ms}ms`;
+  const hasDurRange = step.duration_max_ms != null && step.duration_max_ms > step.duration_ms;
+  const hasIntRange = step.intensity_max != null && step.intensity_max > step.intensity;
+  const durRangeIcon = step.duration_distribution === 'gaussian' ? '\uD83D\uDD14' : '\uD83C\uDFB2';
+  const intRangeIcon = step.intensity_distribution === 'gaussian' ? '\uD83D\uDD14' : '\uD83C\uDFB2';
+  const dur = hasDurRange
+    ? `${durRangeIcon}${fmtDurMs(step.duration_ms)}-${fmtDurMs(step.duration_max_ms)}`
+    : fmtDurMs(step.duration_ms);
   if (step.mode === 'pause' || step.mode === 'beep') return `${icon} ${dur}`;
-  return `${icon} ${dur} @ ${step.intensity}%`;
+  const int = hasIntRange
+    ? `${intRangeIcon}${step.intensity}-${step.intensity_max}%`
+    : `${step.intensity}%`;
+  return `${icon} ${dur} @ ${int}`;
 }
 
 // === Expose globals for inline HTML handlers ===

@@ -195,6 +195,8 @@ mod tests {
             duration_ms,
             intensity_max: None,
             duration_max_ms: None,
+            intensity_distribution: None,
+            duration_distribution: None,
         }
     }
 

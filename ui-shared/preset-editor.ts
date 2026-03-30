@@ -17,6 +17,8 @@ export interface EditorPresetStep {
   intensity_max?: number;
   duration_ms: number;
   duration_max_ms?: number;
+  intensity_distribution?: "uniform" | "gaussian";
+  duration_distribution?: "uniform" | "gaussian";
 }
 
 export interface EditorPresetTrack {
@@ -77,7 +79,7 @@ const DURATION_MAX_MS = 10000;
 const DURATION_STEP_MS = 500;
 const PREVIEW_DEBOUNCE_MS = 150;
 const TRACK_COLORS = ["#4ecca3", "#ffc947", "#e94560", "#6fa8ff", "#ff8fab", "#b8de6f"];
-const MODE_EMOJI: Record<string, string> = { shock: "\u26A1", vibrate: "\u3030\uFE0F", beep: "\uD83D\uDD14", pause: "\u23F8\uFE0F" };
+const MODE_EMOJI: Record<string, string> = { shock: "\u26A1", vibrate: "\u3030\uFE0F", beep: "\uD83D\uDD0A", pause: "\u23F8\uFE0F" };
 const MODE_LABEL: Record<string, string> = { shock: "Shock", vibrate: "Vibrate", beep: "Beep", pause: "Pause" };
 
 // ── State ──
@@ -96,13 +98,13 @@ let previewState: { loading: boolean; error: string | null; data: EditorPresetPr
 
 // ── Duration helpers ──
 
-function normalizeDuration(ms: number): number {
-  const v = Number.isFinite(ms) ? ms : DURATION_MIN_MS;
-  return Math.round(Math.min(DURATION_MAX_MS, Math.max(DURATION_MIN_MS, v)) / DURATION_STEP_MS) * DURATION_STEP_MS;
+function normalizeDuration(ms: number, minMs: number = DURATION_MIN_MS): number {
+  const v = Number.isFinite(ms) ? ms : minMs;
+  return Math.round(Math.min(DURATION_MAX_MS, Math.max(minMs, v)) / DURATION_STEP_MS) * DURATION_STEP_MS;
 }
 
-function formatEditorDuration(ms: number): string {
-  const s = normalizeDuration(ms) / 1000;
+function formatEditorDuration(ms: number, minMs: number = DURATION_MIN_MS): string {
+  const s = normalizeDuration(ms, minMs) / 1000;
   return Number.isInteger(s) ? `${s}s` : `${s.toFixed(1)}s`;
 }
 
@@ -112,23 +114,27 @@ function formatIntensityVal(step: EditorPresetStep): string {
 }
 
 function formatDurationVal(step: EditorPresetStep): string {
-  if (step.duration_max_ms !== undefined) return `${formatEditorDuration(step.duration_ms)}-${formatEditorDuration(step.duration_max_ms)}`;
-  return formatEditorDuration(step.duration_ms);
+  const minDur = step.mode === "pause" ? 0 : DURATION_MIN_MS;
+  if (step.duration_max_ms !== undefined) return `${formatEditorDuration(step.duration_ms, minDur)}-${formatEditorDuration(step.duration_max_ms, minDur)}`;
+  return formatEditorDuration(step.duration_ms, minDur);
 }
 
 function normalizeEditorDurations(preset: EditorPreset): void {
   for (const track of preset.tracks) {
     for (const step of track.steps) {
-      step.duration_ms = normalizeDuration(step.duration_ms);
+      const minDur = step.mode === "pause" ? 0 : DURATION_MIN_MS;
+      step.duration_ms = normalizeDuration(step.duration_ms, minDur);
       if (step.duration_max_ms !== undefined) {
-        step.duration_max_ms = normalizeDuration(step.duration_max_ms);
+        step.duration_max_ms = normalizeDuration(step.duration_max_ms, minDur);
         if (step.duration_max_ms <= step.duration_ms) {
           delete step.duration_max_ms;
+          delete step.duration_distribution;
         }
       }
       if (step.intensity_max !== undefined) {
         if (step.intensity_max <= step.intensity) {
           delete step.intensity_max;
+          delete step.intensity_distribution;
         }
       }
     }
@@ -225,8 +231,8 @@ function injectStyles(): void {
     .pe-track-body.open { display: block; }
     .pe-step { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; padding: 6px; border-radius: 6px; background: rgba(255,255,255,0.03); }
     .pe-step select, .pe-step input { font-size: 0.85em; padding: 4px 6px; }
-    .pe-step-header { display: flex; gap: 4px; align-items: center; flex-wrap: wrap; }
-    .pe-step-header select { min-width: 0; }
+    .pe-step-header { display: flex; gap: 4px; align-items: center; }
+    .pe-step-header select { min-width: 0; width: auto; }
     .pe-step-header select[data-step-mode] { flex: 1; }
     .pe-drag-handle { cursor: grab; color: var(--pe-text2); font-size: 1rem; line-height: 1; padding: 2px 2px; user-select: none; flex-shrink: 0; }
     .pe-drag-handle:active { cursor: grabbing; }
@@ -467,16 +473,19 @@ function renderEditorTracks(): void {
 function renderEditorStep(track: { steps: EditorPresetStep[]; collar_name: string }, ti: number, si: number): HTMLElement {
   const step = track.steps[si]!;
   const noLevel = step.mode === "pause" || step.mode === "beep";
+  const isPause = step.mode === "pause";
   const maxInt = getMaxIntensity(track.collar_name, step.mode);
   const maxDurMs = getMaxDuration(track.collar_name, step.mode);
-  const durSec = (normalizeDuration(step.duration_ms) / 1000).toFixed(1);
+  const minDurMs = isPause ? 0 : DURATION_MIN_MS;
+  const durSec = (normalizeDuration(step.duration_ms, minDurMs) / 1000).toFixed(1);
   const maxDurSec = maxDurMs / 1000;
+  const minDurSec = minDurMs / 1000;
   const intensity = Math.min(step.intensity, maxInt);
   const durVal = Math.min(parseFloat(durSec), maxDurSec);
   const hasIntRange = step.intensity_max !== undefined;
   const hasDurRange = step.duration_max_ms !== undefined;
   const intMax = step.intensity_max ?? maxInt;
-  const durMaxVal = hasDurRange ? Math.min(normalizeDuration(step.duration_max_ms!) / 1000, maxDurSec) : maxDurSec;
+  const durMaxVal = hasDurRange ? Math.min(normalizeDuration(step.duration_max_ms!, minDurMs) / 1000, maxDurSec) : maxDurSec;
 
   const div = document.createElement("div");
   div.className = "pe-step";
@@ -489,12 +498,14 @@ function renderEditorStep(track: { steps: EditorPresetStep[]; collar_name: strin
           ${(["shock", "vibrate", "beep", "pause"] as const).map((m) => `<option value="${m}" ${step.mode === m ? "selected" : ""}>${describeMode(m)}</option>`).join("")}
         </select>
         ${noLevel ? "" : `<select class="pe-mode-select" data-intensity-mode title="Level mode">
-          <option value="fixed" ${!hasIntRange ? "selected" : ""}>Lvl: Fixed</option>
-          <option value="random" ${hasIntRange ? "selected" : ""}>Lvl: Random</option>
+          <option value="fixed" ${!hasIntRange ? "selected" : ""}>\uD83D\uDCC8 Fixed</option>
+          <option value="random" ${hasIntRange && step.intensity_distribution !== "gaussian" ? "selected" : ""}>\uD83D\uDCC8 Random</option>
+          <option value="gaussian" ${hasIntRange && step.intensity_distribution === "gaussian" ? "selected" : ""}>\uD83D\uDCC8 Gaussian</option>
         </select>`}
         <select class="pe-mode-select" data-duration-mode title="Duration mode">
-          <option value="fixed" ${!hasDurRange ? "selected" : ""}>Dur: Fixed</option>
-          <option value="random" ${hasDurRange ? "selected" : ""}>Dur: Random</option>
+          <option value="fixed" ${!hasDurRange ? "selected" : ""}>\u23F1 Fixed</option>
+          <option value="random" ${hasDurRange && step.duration_distribution !== "gaussian" ? "selected" : ""}>\u23F1 Random</option>
+          <option value="gaussian" ${hasDurRange && step.duration_distribution === "gaussian" ? "selected" : ""}>\u23F1 Gaussian</option>
         </select>
         <button class="danger" data-step-remove style="padding:0.3rem 0.6rem">X</button>
       </div>
@@ -510,10 +521,10 @@ function renderEditorStep(track: { steps: EditorPresetStep[]; collar_name: strin
         </div>`}
         <div class="pe-slider">
           <span class="slider-label">Duration</span>
-          <input type="range" min="${DURATION_MIN_MS / 1000}" max="${maxDurSec}" step="${DURATION_STEP_MS / 1000}" value="${durVal}" data-step-duration style="${hasDurRange ? "display:none" : ""}">
+          <input type="range" min="${minDurSec}" max="${maxDurSec}" step="${DURATION_STEP_MS / 1000}" value="${durVal}" data-step-duration style="${hasDurRange ? "display:none" : ""}">
           <div class="pe-range-slider" style="${hasDurRange ? "" : "display:none"}" data-duration-range>
-            <input type="range" class="range-min" min="${DURATION_MIN_MS / 1000}" max="${maxDurSec}" step="${DURATION_STEP_MS / 1000}" value="${durVal}">
-            <input type="range" class="range-max" min="${DURATION_MIN_MS / 1000}" max="${maxDurSec}" step="${DURATION_STEP_MS / 1000}" value="${durMaxVal}">
+            <input type="range" class="range-min" min="${minDurSec}" max="${maxDurSec}" step="${DURATION_STEP_MS / 1000}" value="${durVal}">
+            <input type="range" class="range-max" min="${minDurSec}" max="${maxDurSec}" step="${DURATION_STEP_MS / 1000}" value="${durMaxVal}">
           </div>
           <span class="slider-val" data-duration-val>${formatDurationVal(step)}</span>
         </div>
@@ -540,23 +551,30 @@ function renderEditorStep(track: { steps: EditorPresetStep[]; collar_name: strin
     });
   }
 
-  // Intensity mode toggle (Fixed / Random)
+  // Intensity mode toggle (Fixed / Random / Gaussian)
   const intModeSelect = div.querySelector("[data-intensity-mode]") as HTMLSelectElement | null;
   if (intModeSelect) {
     intModeSelect.addEventListener("change", () => {
-      const isRandom = intModeSelect.value === "random";
+      const mode = intModeSelect.value;
       const fixedSlider = div.querySelector("[data-step-intensity]") as HTMLInputElement;
       const rangeDiv = div.querySelector("[data-intensity-range]") as HTMLElement;
-      if (isRandom) {
+      if (mode === "random" || mode === "gaussian") {
         fixedSlider.style.display = "none";
         rangeDiv.style.display = "";
-        const cur = step.intensity;
-        step.intensity_max = Math.min(cur + 10, getMaxIntensity(track.collar_name, step.mode));
-        if (step.intensity_max <= step.intensity) step.intensity_max = step.intensity + 1;
-        const rangeMinInput = rangeDiv.querySelector(".range-min") as HTMLInputElement;
-        const rangeMaxInput = rangeDiv.querySelector(".range-max") as HTMLInputElement;
-        rangeMinInput.value = String(step.intensity);
-        rangeMaxInput.value = String(step.intensity_max);
+        if (step.intensity_max === undefined) {
+          const cur = step.intensity;
+          step.intensity_max = Math.min(cur + 10, getMaxIntensity(track.collar_name, step.mode));
+          if (step.intensity_max <= step.intensity) step.intensity_max = step.intensity + 1;
+          const rangeMinInput = rangeDiv.querySelector(".range-min") as HTMLInputElement;
+          const rangeMaxInput = rangeDiv.querySelector(".range-max") as HTMLInputElement;
+          rangeMinInput.value = String(step.intensity);
+          rangeMaxInput.value = String(step.intensity_max);
+        }
+        if (mode === "gaussian") {
+          step.intensity_distribution = "gaussian";
+        } else {
+          delete step.intensity_distribution;
+        }
       } else {
         fixedSlider.style.display = "";
         rangeDiv.style.display = "none";
@@ -565,6 +583,7 @@ function renderEditorStep(track: { steps: EditorPresetStep[]; collar_name: strin
         const mid = Math.round((parseInt(rangeMinInput.value, 10) + parseInt(rangeMaxInput.value, 10)) / 2);
         step.intensity = mid;
         delete step.intensity_max;
+        delete step.intensity_distribution;
         fixedSlider.value = String(mid);
       }
       div.querySelector("[data-intensity-val]")!.textContent = formatIntensityVal(step);
@@ -596,35 +615,43 @@ function renderEditorStep(track: { steps: EditorPresetStep[]; collar_name: strin
   // Duration fixed slider
   const durSlider = div.querySelector("[data-step-duration]") as HTMLInputElement;
   durSlider.addEventListener("input", () => {
-    step.duration_ms = normalizeDuration(Math.round(parseFloat(durSlider.value) * 1000));
+    step.duration_ms = normalizeDuration(Math.round(parseFloat(durSlider.value) * 1000), minDurMs);
     div.querySelector("[data-duration-val]")!.textContent = formatDurationVal(step);
     schedulePreviewRefresh();
   });
 
-  // Duration mode toggle (Fixed / Random)
+  // Duration mode toggle (Fixed / Random / Gaussian)
   const durModeSelect = div.querySelector("[data-duration-mode]") as HTMLSelectElement;
   durModeSelect.addEventListener("change", () => {
-    const isRandom = durModeSelect.value === "random";
+    const mode = durModeSelect.value;
     const fixedSlider = div.querySelector("[data-step-duration]") as HTMLInputElement;
     const rangeDiv = div.querySelector("[data-duration-range]") as HTMLElement;
-    if (isRandom) {
+    if (mode === "random" || mode === "gaussian") {
       fixedSlider.style.display = "none";
       rangeDiv.style.display = "";
-      const curMs = step.duration_ms;
-      step.duration_max_ms = normalizeDuration(Math.min(curMs + DURATION_STEP_MS, getMaxDuration(track.collar_name, step.mode)));
-      if (step.duration_max_ms <= step.duration_ms) step.duration_max_ms = step.duration_ms + DURATION_STEP_MS;
-      const rangeMinInput = rangeDiv.querySelector(".range-min") as HTMLInputElement;
-      const rangeMaxInput = rangeDiv.querySelector(".range-max") as HTMLInputElement;
-      rangeMinInput.value = String(step.duration_ms / 1000);
-      rangeMaxInput.value = String(step.duration_max_ms / 1000);
+      if (step.duration_max_ms === undefined) {
+        const curMs = step.duration_ms;
+        step.duration_max_ms = normalizeDuration(Math.min(curMs + DURATION_STEP_MS, getMaxDuration(track.collar_name, step.mode)), minDurMs);
+        if (step.duration_max_ms <= step.duration_ms) step.duration_max_ms = step.duration_ms + DURATION_STEP_MS;
+        const rangeMinInput = rangeDiv.querySelector(".range-min") as HTMLInputElement;
+        const rangeMaxInput = rangeDiv.querySelector(".range-max") as HTMLInputElement;
+        rangeMinInput.value = String(step.duration_ms / 1000);
+        rangeMaxInput.value = String(step.duration_max_ms / 1000);
+      }
+      if (mode === "gaussian") {
+        step.duration_distribution = "gaussian";
+      } else {
+        delete step.duration_distribution;
+      }
     } else {
       fixedSlider.style.display = "";
       rangeDiv.style.display = "none";
       const rangeMinInput = rangeDiv.querySelector(".range-min") as HTMLInputElement;
       const rangeMaxInput = rangeDiv.querySelector(".range-max") as HTMLInputElement;
-      const midMs = normalizeDuration(Math.round((parseFloat(rangeMinInput.value) + parseFloat(rangeMaxInput.value)) / 2 * 1000));
+      const midMs = normalizeDuration(Math.round((parseFloat(rangeMinInput.value) + parseFloat(rangeMaxInput.value)) / 2 * 1000), minDurMs);
       step.duration_ms = midMs;
       delete step.duration_max_ms;
+      delete step.duration_distribution;
       fixedSlider.value = String(midMs / 1000);
     }
     div.querySelector("[data-duration-val]")!.textContent = formatDurationVal(step);
@@ -638,14 +665,14 @@ function renderEditorStep(track: { steps: EditorPresetStep[]; collar_name: strin
   durRangeMin.addEventListener("input", () => {
     let v = parseFloat(durRangeMin.value);
     if (v > parseFloat(durRangeMax.value)) { v = parseFloat(durRangeMax.value); durRangeMin.value = String(v); }
-    step.duration_ms = normalizeDuration(Math.round(v * 1000));
+    step.duration_ms = normalizeDuration(Math.round(v * 1000), minDurMs);
     div.querySelector("[data-duration-val]")!.textContent = formatDurationVal(step);
     schedulePreviewRefresh();
   });
   durRangeMax.addEventListener("input", () => {
     let v = parseFloat(durRangeMax.value);
     if (v < parseFloat(durRangeMin.value)) { v = parseFloat(durRangeMin.value); durRangeMax.value = String(v); }
-    step.duration_max_ms = normalizeDuration(Math.round(v * 1000));
+    step.duration_max_ms = normalizeDuration(Math.round(v * 1000), minDurMs);
     div.querySelector("[data-duration-val]")!.textContent = formatDurationVal(step);
     schedulePreviewRefresh();
   });

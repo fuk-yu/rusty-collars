@@ -10,10 +10,10 @@ import type { CollarPermission, DevicePermission, DeviceSnapshot, ModeLimit, Use
 interface CollarState {
   intensity: number;
   intensityMax: number;
-  intensityMode: "fixed" | "random";
+  intensityMode: "fixed" | "random" | "gaussian";
   durationMs: number;
   durationMaxMs: number;
-  durationMode: "fixed" | "held" | "random";
+  durationMode: "fixed" | "held" | "random" | "gaussian";
 }
 
 interface DevicePageState {
@@ -187,11 +187,11 @@ function renderCollarPanel(collar: Collar, snap: DeviceSnapshot): string {
   const maxDurSec = (effectiveMaxDur / 1000).toFixed(1);
 
   const isHeld = cs.durationMode === "held";
-  const isIntRandom = cs.intensityMode === "random";
-  const isDurRandom = cs.durationMode === "random";
+  const isIntRange = cs.intensityMode !== "fixed";
+  const isDurRange = cs.durationMode === "random" || cs.durationMode === "gaussian";
 
-  const intensityDisplay = isIntRandom ? `${clampedInt}-${clampedIntMax}` : String(clampedInt);
-  const durationDisplay = isHeld ? "hold" : isDurRandom ? `${durSec}s-${durMaxSec}s` : `${durSec}s`;
+  const intensityDisplay = isIntRange ? `${clampedInt}-${clampedIntMax}` : String(clampedInt);
+  const durationDisplay = isHeld ? "hold" : isDurRange ? `${durSec}s-${durMaxSec}s` : `${durSec}s`;
 
   const limitsText = !snap.isOwner && perm ? buildLimitsText(perm) : "";
 
@@ -206,10 +206,11 @@ function renderCollarPanel(collar: Collar, snap: DeviceSnapshot): string {
         <select class="collar-intensity-mode bg-gray-700 border border-gray-600 rounded text-xs px-1 py-0.5 text-gray-300" data-collar="${esc(collar.name)}">
           <option value="fixed" ${cs.intensityMode === "fixed" ? "selected" : ""}>Fixed</option>
           <option value="random" ${cs.intensityMode === "random" ? "selected" : ""}>Random</option>
+          <option value="gaussian" ${cs.intensityMode === "gaussian" ? "selected" : ""}>Gaussian</option>
         </select>
         <input type="range" min="0" max="${effectiveMaxInt}" value="${clampedInt}"
-          class="collar-intensity flex-1 accent-blue-500" data-collar="${esc(collar.name)}" style="${isIntRandom ? "display:none" : ""}">
-        <div class="cc-range-slider flex-1" data-collar="${esc(collar.name)}" data-field="intensity" style="${isIntRandom ? "" : "display:none"}">
+          class="collar-intensity flex-1 accent-blue-500" data-collar="${esc(collar.name)}" style="${isIntRange ? "display:none" : ""}">
+        <div class="cc-range-slider flex-1" data-collar="${esc(collar.name)}" data-field="intensity" style="${isIntRange ? "" : "display:none"}">
           <input type="range" class="range-min" min="0" max="${effectiveMaxInt}" value="${clampedInt}">
           <input type="range" class="range-max" min="0" max="${effectiveMaxInt}" value="${clampedIntMax}">
         </div>
@@ -221,10 +222,11 @@ function renderCollarPanel(collar: Collar, snap: DeviceSnapshot): string {
           <option value="fixed" ${cs.durationMode === "fixed" ? "selected" : ""}>Fixed</option>
           <option value="held" ${cs.durationMode === "held" ? "selected" : ""}>Held</option>
           <option value="random" ${cs.durationMode === "random" ? "selected" : ""}>Random</option>
+          <option value="gaussian" ${cs.durationMode === "gaussian" ? "selected" : ""}>Gaussian</option>
         </select>
         <input type="range" min="0.5" max="${maxDurSec}" step="0.5" value="${durSec}"
           class="collar-duration flex-1 accent-blue-500" data-collar="${esc(collar.name)}" style="${cs.durationMode === "fixed" ? "" : "display:none"}">
-        <div class="cc-range-slider flex-1" data-collar="${esc(collar.name)}" data-field="duration" style="${isDurRandom ? "" : "display:none"}">
+        <div class="cc-range-slider flex-1" data-collar="${esc(collar.name)}" data-field="duration" style="${isDurRange ? "" : "display:none"}">
           <input type="range" class="range-min" min="0.5" max="${maxDurSec}" step="0.5" value="${durSec}">
           <input type="range" class="range-max" min="0.5" max="${maxDurSec}" step="0.5" value="${durMaxSec}">
         </div>
@@ -509,7 +511,7 @@ export function bindDeviceEvents(root: HTMLElement): void {
       const select = e.target as HTMLSelectElement;
       const collarName = select.dataset.collar!;
       const cs = getCollarState(collarName);
-      cs.intensityMode = select.value as "fixed" | "random";
+      cs.intensityMode = select.value as "fixed" | "random" | "gaussian";
       triggerRender();
     });
   });
@@ -553,7 +555,7 @@ export function bindDeviceEvents(root: HTMLElement): void {
       const select = e.target as HTMLSelectElement;
       const collarName = select.dataset.collar!;
       const cs = getCollarState(collarName);
-      cs.durationMode = select.value as "fixed" | "held" | "random";
+      cs.durationMode = select.value as "fixed" | "held" | "random" | "gaussian";
       triggerRender();
     });
   });
@@ -604,8 +606,11 @@ export function bindDeviceEvents(root: HTMLElement): void {
         () => {
           const intensity = mode === "beep" ? 0 : cs.intensity;
           const cmd: StartActionCommand = { type: "start_action", collar_name: collarName, mode, intensity };
-          if (mode !== "beep" && cs.intensityMode === "random") {
+          if (mode !== "beep" && (cs.intensityMode === "random" || cs.intensityMode === "gaussian")) {
             cmd.intensity_max = cs.intensityMax;
+            if (cs.intensityMode === "gaussian") {
+              cmd.intensity_distribution = "gaussian";
+            }
           }
           pageState.activeActions.add(`${collarName}:${mode}`);
           try {
@@ -631,11 +636,17 @@ export function bindDeviceEvents(root: HTMLElement): void {
         const cmd: RunActionCommand = {
           type: "run_action", collar_name: collarName, mode, intensity, duration_ms: cs.durationMs,
         };
-        if (mode !== "beep" && cs.intensityMode === "random") {
+        if (mode !== "beep" && (cs.intensityMode === "random" || cs.intensityMode === "gaussian")) {
           cmd.intensity_max = cs.intensityMax;
+          if (cs.intensityMode === "gaussian") {
+            cmd.intensity_distribution = "gaussian";
+          }
         }
-        if (cs.durationMode === "random") {
+        if (cs.durationMode === "random" || cs.durationMode === "gaussian") {
           cmd.duration_max_ms = cs.durationMaxMs;
+          if (cs.durationMode === "gaussian") {
+            cmd.duration_distribution = "gaussian";
+          }
         }
         try {
           ws.sendDeviceCommand(pageState.uuid, cmd);

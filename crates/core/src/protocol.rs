@@ -146,6 +146,19 @@ pub enum ButtonAction {
     Release,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Distribution {
+    Uniform,
+    Gaussian,
+}
+
+impl Default for Distribution {
+    fn default() -> Self {
+        Self::Uniform
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Collar {
     pub name: String,
@@ -153,7 +166,7 @@ pub struct Collar {
     pub channel: u8,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Preset {
     pub name: String,
     pub tracks: Vec<PresetTrack>,
@@ -167,19 +180,20 @@ impl Preset {
                 if !step.mode.has_intensity() {
                     step.intensity = 0;
                     step.intensity_max = None;
+                    step.intensity_distribution = None;
                 }
             }
         }
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PresetTrack {
     pub collar_name: String,
     pub steps: Vec<PresetStep>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PresetStep {
     pub mode: PresetStepMode,
     pub intensity: u8,
@@ -188,6 +202,10 @@ pub struct PresetStep {
     pub intensity_max: Option<u8>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_max_ms: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub intensity_distribution: Option<Distribution>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_distribution: Option<Distribution>,
 }
 
 impl PresetStep {
@@ -205,6 +223,12 @@ impl PresetStep {
             }
             _ => self.intensity,
         }
+    }
+
+    /// Returns true if this step has any random ranges.
+    pub fn has_random(&self) -> bool {
+        self.intensity_max.map_or(false, |m| m > self.intensity)
+            || self.duration_max_ms.map_or(false, |m| m > self.duration_ms)
     }
 }
 
@@ -257,6 +281,10 @@ pub enum ClientMessage {
         intensity_max: Option<u8>,
         #[serde(default)]
         duration_max_ms: Option<u32>,
+        #[serde(default)]
+        intensity_distribution: Option<Distribution>,
+        #[serde(default)]
+        duration_distribution: Option<Distribution>,
     },
     StartAction {
         collar_name: String,
@@ -264,6 +292,8 @@ pub enum ClientMessage {
         intensity: u8,
         #[serde(default)]
         intensity_max: Option<u8>,
+        #[serde(default)]
+        intensity_distribution: Option<Distribution>,
     },
     StopAction {
         collar_name: String,
@@ -425,6 +455,10 @@ pub enum EventLogEntryKind {
     },
     PresetRun {
         preset_name: String,
+        /// When the preset contains random steps, this holds a copy with the
+        /// concrete values that were selected for this particular run.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        resolved_preset: Option<Preset>,
     },
     NtpSync {
         server: String,
@@ -587,6 +621,8 @@ mod tests {
                         duration_ms: 1000,
                         intensity_max: None,
                         duration_max_ms: None,
+                        intensity_distribution: None,
+                        duration_distribution: None,
                     },
                     PresetStep {
                         mode: PresetStepMode::Vibrate,

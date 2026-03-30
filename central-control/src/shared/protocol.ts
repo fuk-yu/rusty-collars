@@ -2,6 +2,7 @@
 
 export type CommandMode = "shock" | "vibrate" | "beep";
 export type PresetStepMode = CommandMode | "pause";
+export type Distribution = "uniform" | "gaussian";
 
 export interface Collar {
   name: string;
@@ -15,6 +16,8 @@ export interface PresetStep {
   intensity_max?: number;
   duration_ms: number;
   duration_max_ms?: number;
+  intensity_distribution?: Distribution;
+  duration_distribution?: Distribution;
 }
 
 export interface PresetTrack {
@@ -117,6 +120,7 @@ export interface EventLogPresetRun {
   source: EventSource;
   event: "preset_run";
   preset_name: string;
+  resolved_preset?: Preset;
 }
 
 export type EventLogEntry = EventLogAction | EventLogPresetRun;
@@ -151,6 +155,8 @@ export interface RunActionCommand {
   intensity_max?: number;
   duration_ms: number;
   duration_max_ms?: number;
+  intensity_distribution?: Distribution;
+  duration_distribution?: Distribution;
 }
 
 export interface StartActionCommand {
@@ -159,6 +165,7 @@ export interface StartActionCommand {
   mode: CommandMode;
   intensity: number;
   intensity_max?: number;
+  intensity_distribution?: Distribution;
 }
 
 export interface StopActionCommand {
