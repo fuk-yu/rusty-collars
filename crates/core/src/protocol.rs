@@ -166,6 +166,7 @@ impl Preset {
             for step in &mut track.steps {
                 if !step.mode.has_intensity() {
                     step.intensity = 0;
+                    step.intensity_max = None;
                 }
             }
         }
@@ -183,6 +184,28 @@ pub struct PresetStep {
     pub mode: PresetStepMode,
     pub intensity: u8,
     pub duration_ms: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub intensity_max: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_max_ms: Option<u32>,
+}
+
+impl PresetStep {
+    pub fn midpoint_duration(&self) -> u32 {
+        match self.duration_max_ms {
+            Some(max) if max > self.duration_ms => (self.duration_ms + max) / 2,
+            _ => self.duration_ms,
+        }
+    }
+
+    pub fn midpoint_intensity(&self) -> u8 {
+        match self.intensity_max {
+            Some(max) if max > self.intensity => {
+                ((self.intensity as u16 + max as u16) / 2) as u8
+            }
+            _ => self.intensity,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -230,11 +253,17 @@ pub enum ClientMessage {
         mode: CommandMode,
         intensity: u8,
         duration_ms: u32,
+        #[serde(default)]
+        intensity_max: Option<u8>,
+        #[serde(default)]
+        duration_max_ms: Option<u32>,
     },
     StartAction {
         collar_name: String,
         mode: CommandMode,
         intensity: u8,
+        #[serde(default)]
+        intensity_max: Option<u8>,
     },
     StopAction {
         collar_name: String,
@@ -556,30 +585,106 @@ mod tests {
                         mode: PresetStepMode::Shock,
                         intensity: 50,
                         duration_ms: 1000,
+                        intensity_max: None,
+                        duration_max_ms: None,
                     },
                     PresetStep {
                         mode: PresetStepMode::Vibrate,
                         intensity: 30,
                         duration_ms: 500,
+                        intensity_max: Some(60),
+                        duration_max_ms: None,
                     },
                     PresetStep {
                         mode: PresetStepMode::Beep,
                         intensity: 99,
                         duration_ms: 200,
+                        intensity_max: Some(99),
+                        duration_max_ms: None,
                     },
                     PresetStep {
                         mode: PresetStepMode::Pause,
                         intensity: 42,
                         duration_ms: 300,
+                        intensity_max: Some(50),
+                        duration_max_ms: None,
                     },
                 ],
             }],
         };
         preset.normalize();
         assert_eq!(preset.tracks[0].steps[0].intensity, 50); // shock: unchanged
+        assert_eq!(preset.tracks[0].steps[0].intensity_max, None);
         assert_eq!(preset.tracks[0].steps[1].intensity, 30); // vibrate: unchanged
+        assert_eq!(preset.tracks[0].steps[1].intensity_max, Some(60)); // kept
         assert_eq!(preset.tracks[0].steps[2].intensity, 0); // beep: zeroed
+        assert_eq!(preset.tracks[0].steps[2].intensity_max, None); // cleared
         assert_eq!(preset.tracks[0].steps[3].intensity, 0); // pause: zeroed
+        assert_eq!(preset.tracks[0].steps[3].intensity_max, None); // cleared
+    }
+
+    #[test]
+    fn preset_step_midpoint_fixed() {
+        let step = PresetStep {
+            mode: PresetStepMode::Shock,
+            intensity: 50,
+            duration_ms: 2000,
+            intensity_max: None,
+            duration_max_ms: None,
+        };
+        assert_eq!(step.midpoint_intensity(), 50);
+        assert_eq!(step.midpoint_duration(), 2000);
+    }
+
+    #[test]
+    fn preset_step_midpoint_random() {
+        let step = PresetStep {
+            mode: PresetStepMode::Vibrate,
+            intensity: 20,
+            duration_ms: 1000,
+            intensity_max: Some(80),
+            duration_max_ms: Some(5000),
+        };
+        assert_eq!(step.midpoint_intensity(), 50);
+        assert_eq!(step.midpoint_duration(), 3000);
+    }
+
+    #[test]
+    fn run_action_with_random_fields_deserializes() {
+        let json = r#"{"type":"run_action","collar_name":"Rex","mode":"shock","intensity":10,"duration_ms":1000,"intensity_max":50,"duration_max_ms":3000}"#;
+        let msg: ClientMessage = serde_json::from_str(json).unwrap();
+        match msg {
+            ClientMessage::RunAction {
+                intensity,
+                duration_ms,
+                intensity_max,
+                duration_max_ms,
+                ..
+            } => {
+                assert_eq!(intensity, 10);
+                assert_eq!(duration_ms, 1000);
+                assert_eq!(intensity_max, Some(50));
+                assert_eq!(duration_max_ms, Some(3000));
+            }
+            other => panic!("Expected RunAction, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn run_action_without_random_fields_deserializes() {
+        let json = r#"{"type":"run_action","collar_name":"Rex","mode":"shock","intensity":25,"duration_ms":1500}"#;
+        let msg: ClientMessage = serde_json::from_str(json).unwrap();
+        match msg {
+            ClientMessage::RunAction {
+                intensity_max,
+                duration_max_ms,
+                ..
+            } => {
+                assert_eq!(intensity_max, None);
+                assert_eq!(duration_max_ms, None);
+            }
+            other => panic!("Expected RunAction, got {:?}", other),
+        }
     }
 
     // --- RF frame encoding ---
@@ -706,6 +811,7 @@ mod tests {
                 mode,
                 intensity,
                 duration_ms,
+                ..
             } => {
                 assert_eq!(collar_name, "Rex");
                 assert_eq!(mode, CommandMode::Shock);
@@ -732,6 +838,8 @@ mod tests {
                         mode: PresetStepMode::Vibrate,
                         intensity: 30,
                         duration_ms: 1500,
+                        intensity_max: None,
+                        duration_max_ms: None,
                     }],
                 }],
             }],

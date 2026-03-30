@@ -12,7 +12,9 @@ export interface Collar {
 export interface PresetStep {
   mode: PresetStepMode;
   intensity: number;
+  intensity_max?: number;
   duration_ms: number;
+  duration_max_ms?: number;
 }
 
 export interface PresetTrack {
@@ -146,7 +148,9 @@ export interface RunActionCommand {
   collar_name: string;
   mode: CommandMode;
   intensity: number;
+  intensity_max?: number;
   duration_ms: number;
+  duration_max_ms?: number;
 }
 
 export interface StartActionCommand {
@@ -154,6 +158,7 @@ export interface StartActionCommand {
   collar_name: string;
   mode: CommandMode;
   intensity: number;
+  intensity_max?: number;
 }
 
 export interface StopActionCommand {

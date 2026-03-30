@@ -90,6 +90,26 @@ pub fn validate_preset_and_schedule_events(
                     step_index
                 ));
             }
+            if let Some(duration_max_ms) = step.duration_max_ms {
+                if duration_max_ms == 0 {
+                    return Err(anyhow!(
+                        "Preset '{}' track {} step {} has zero duration_max_ms",
+                        preset.name,
+                        track_index,
+                        step_index
+                    ));
+                }
+                if duration_max_ms < step.duration_ms {
+                    return Err(anyhow!(
+                        "Preset '{}' track {} step {} duration_max_ms {} < duration_ms {}",
+                        preset.name,
+                        track_index,
+                        step_index,
+                        duration_max_ms,
+                        step.duration_ms
+                    ));
+                }
+            }
             if step.mode.to_command_mode().is_some() {
                 if step.intensity > MAX_INTENSITY {
                     return Err(anyhow!(
@@ -100,12 +120,33 @@ pub fn validate_preset_and_schedule_events(
                         step.intensity
                     ));
                 }
+                if let Some(intensity_max) = step.intensity_max {
+                    if intensity_max > MAX_INTENSITY {
+                        return Err(anyhow!(
+                            "Preset '{}' track {} step {} has invalid intensity_max {}",
+                            preset.name,
+                            track_index,
+                            step_index,
+                            intensity_max
+                        ));
+                    }
+                    if intensity_max < step.intensity {
+                        return Err(anyhow!(
+                            "Preset '{}' track {} step {} intensity_max {} < intensity {}",
+                            preset.name,
+                            track_index,
+                            step_index,
+                            intensity_max,
+                            step.intensity
+                        ));
+                    }
+                }
                 runnable_steps += 1;
             }
         }
     }
 
-    let events = scheduling::schedule_preset_events(preset, collars)?;
+    let events = scheduling::schedule_preset_events(preset, collars, &mut scheduling::MidpointResolver)?;
 
     if runnable_steps == 0 {
         return Err(anyhow!(
@@ -152,6 +193,8 @@ mod tests {
             mode,
             intensity,
             duration_ms,
+            intensity_max: None,
+            duration_max_ms: None,
         }
     }
 
@@ -234,7 +277,7 @@ mod tests {
 
         let events = validate_preset_and_schedule_events(&p, &collars).unwrap();
         assert!(!events.is_empty());
-        let expected = scheduling::schedule_preset_events(&p, &collars).unwrap();
+        let expected = scheduling::schedule_preset_events(&p, &collars, &mut scheduling::MidpointResolver).unwrap();
         let actual_fields: Vec<(u64, u16, u8, u8, u8)> = events
             .iter()
             .map(|event| {

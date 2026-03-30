@@ -21,9 +21,12 @@ use crate::protocol::{
     MAX_INTENSITY,
 };
 use crate::rf::{RfReceiver, RfTransmitter};
-use crate::scheduling::{self, PresetEvent};
+use crate::scheduling::{self, PresetEvent, StepResolver};
 use crate::storage::Storage;
 use crate::validation;
+
+use rand::rngs::SmallRng;
+use rand::{Rng, SeedableRng};
 
 const FRONTEND_HTML_GZ: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/frontend.html.gz"));
 const HAS_WIFI: bool = cfg!(has_wifi);
@@ -36,6 +39,21 @@ const MANUAL_ACTION_SLEEP_SLICE_MS: u64 = 50;
 const VALID_UNIX_TIME_THRESHOLD_MS: u64 = 946_684_800_000;
 const HTTP_BUF_SIZE: usize = 1024;
 const WS_BUF_SIZE: usize = 2048;
+
+struct RandomResolver<'a> {
+    rng: &'a mut SmallRng,
+}
+
+impl StepResolver for RandomResolver<'_> {
+    fn resolve_duration(&mut self, min: u32, max: u32) -> u32 {
+        let min_steps = min / 500;
+        let max_steps = max / 500;
+        self.rng.random_range(min_steps..=max_steps) * 500
+    }
+    fn resolve_intensity(&mut self, min: u8, max: u8) -> u8 {
+        self.rng.random_range(min..=max)
+    }
+}
 
 #[derive(Clone)]
 pub struct BroadcastMsg {
@@ -77,7 +95,9 @@ struct ManualActionSpec {
     channel: u8,
     mode: CommandMode,
     intensity: u8,
+    intensity_max: Option<u8>,
     duration_ms: Option<u32>,
+    duration_max_ms: Option<u32>,
     source: EventSource,
 }
 
@@ -117,6 +137,7 @@ pub struct AppCtx {
     next_action_id: Arc<AtomicU32>,
     event_log_sequence: Arc<AtomicU32>,
     pub remote_control_settings_revision: Arc<AtomicU32>,
+    pub rng: Arc<Mutex<SmallRng>>,
     /// Active WS client addresses, keyed by conn_id.
     pub ws_clients: Arc<Mutex<Vec<(u32, String)>>>,
 }
@@ -166,6 +187,9 @@ impl AppCtx {
             next_action_id: Arc::new(AtomicU32::new(0)),
             event_log_sequence: Arc::new(AtomicU32::new(0)),
             remote_control_settings_revision: Arc::new(AtomicU32::new(0)),
+            rng: Arc::new(Mutex::new(SmallRng::seed_from_u64(
+                unsafe { esp_idf_svc::sys::esp_random() } as u64,
+            ))),
             ws_clients: Arc::new(Mutex::new(Vec::new())),
         }
     }
@@ -857,7 +881,9 @@ fn start_manual_action(
     collar_name: String,
     mode: CommandMode,
     intensity: u8,
+    intensity_max: Option<u8>,
     duration_ms: Option<u32>,
+    duration_max_ms: Option<u32>,
     source: EventSource,
     owner: Option<ActionOwner>,
     cancel_on_disconnect: bool,
@@ -879,7 +905,9 @@ fn start_manual_action(
         channel: collar.channel,
         mode,
         intensity: normalized_intensity,
+        intensity_max,
         duration_ms,
+        duration_max_ms,
         source,
     };
 
@@ -916,8 +944,27 @@ fn start_manual_action(
 fn run_manual_action(spec: ManualActionSpec, ctx: &AppCtx, run_id: u32, cancel: Arc<AtomicBool>) {
     let cleanup_key = spec.key.clone();
     let started_at = Instant::now();
-    let deadline = spec
-        .duration_ms
+
+    // Resolve random intensity once at action start
+    let actual_intensity = match spec.intensity_max {
+        Some(max) if max > spec.intensity && spec.mode.has_intensity() => {
+            ctx.rng.lock().unwrap().random_range(spec.intensity..=max)
+        }
+        _ => spec.intensity,
+    };
+
+    // Resolve random duration once at action start
+    let actual_duration_ms: Option<u32> = match (spec.duration_ms, spec.duration_max_ms) {
+        (Some(min), Some(max)) if max > min => {
+            let mut rng = ctx.rng.lock().unwrap();
+            let min_steps = min / 500;
+            let max_steps = max / 500;
+            Some(rng.random_range(min_steps..=max_steps) * 500)
+        }
+        (dur, _) => dur,
+    };
+
+    let deadline = actual_duration_ms
         .map(|duration_ms| started_at + Duration::from_millis(duration_ms as u64));
 
     'outer: loop {
@@ -937,7 +984,7 @@ fn run_manual_action(spec: ManualActionSpec, ctx: &AppCtx, run_id: u32, cancel: 
             spec.collar_id,
             spec.channel,
             spec.mode.to_rf_byte(),
-            spec.intensity,
+            actual_intensity,
         ) {
             error!("RF send error during manual action: {err:#}");
         }
@@ -978,7 +1025,7 @@ fn run_manual_action(spec: ManualActionSpec, ctx: &AppCtx, run_id: u32, cancel: 
             collar_name: spec.key.collar_name,
             mode: spec.mode,
             intensity: if spec.mode.has_intensity() {
-                Some(spec.intensity)
+                Some(actual_intensity)
             } else {
                 None
             },
@@ -1035,13 +1082,17 @@ pub(crate) fn process_control_message(
             mode,
             intensity,
             duration_ms,
+            intensity_max,
+            duration_max_ms,
         } => {
             start_manual_action(
                 ctx,
                 collar_name,
                 mode,
                 intensity,
+                intensity_max,
                 Some(duration_ms),
+                duration_max_ms,
                 event_source(origin),
                 owner,
                 false,
@@ -1053,12 +1104,15 @@ pub(crate) fn process_control_message(
             collar_name,
             mode,
             intensity,
+            intensity_max,
         } => {
             start_manual_action(
                 ctx,
                 collar_name,
                 mode,
                 intensity,
+                intensity_max,
+                None,
                 None,
                 event_source(origin),
                 owner,
@@ -1242,8 +1296,15 @@ pub(crate) fn process_control_message(
                 else {
                     return Err(format!("Unknown preset: {name}"));
                 };
-                let events = validation::validate_preset_and_schedule_events(&preset, &d.collars)
+                // Validate with midpoint values (ensures minimum durations are schedulable)
+                validation::validate_preset(&preset, &d.collars)
                     .map_err(|err| err.to_string())?;
+                // Schedule with random resolution for actual execution
+                let mut rng = ctx.rng.lock().unwrap();
+                let mut resolver = RandomResolver { rng: &mut *rng };
+                let events =
+                    scheduling::schedule_preset_events(&preset, &d.collars, &mut resolver)
+                        .map_err(|err| err.to_string())?;
                 let run_id = ctx.preset_run_id.fetch_add(1, Ordering::SeqCst) + 1;
                 d.preset_name = Some(name.clone());
                 (preset.name.clone(), events, run_id)

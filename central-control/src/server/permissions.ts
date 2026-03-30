@@ -67,7 +67,7 @@ export function checkPresetPermission(perm: DevicePermission, preset: Preset): s
     for (const step of track.steps) {
       if (step.mode === "pause") continue;
 
-      const error = checkModeLimits(collarPerm, step.mode, step.intensity, step.duration_ms);
+      const error = checkModeLimits(collarPerm, step.mode, step.intensity_max ?? step.intensity, step.duration_max_ms ?? step.duration_ms);
       if (error) {
         return `Track "${track.collar_name}": ${error}`;
       }

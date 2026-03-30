@@ -338,42 +338,68 @@ function renderRemotes() {
   for (const c of state.collars) {
     const card = document.createElement('div');
     card.className = 'card';
+    const name = esc(c.name);
     const idHex = '0x' + c.collar_id.toString(16).toUpperCase().padStart(4, '0');
     const savedLevel = getCollarPref(c.name, 'level', '30');
     const savedDur = getCollarPref(c.name, 'duration', '2');
-    const whilePressed = getCollarPref(c.name, 'whilePressed', 'false') === 'true';
+    const intensityMode = getCollarPref(c.name, 'intensityMode', 'fixed');
+    const durationMode = getCollarPref(c.name, 'durationMode', 'fixed');
+    const levelMin = getCollarPref(c.name, 'levelMin', '10');
+    const levelMax = getCollarPref(c.name, 'levelMax', '60');
+    const durMin = getCollarPref(c.name, 'durationMin', '1');
+    const durMax = getCollarPref(c.name, 'durationMax', '5');
+
+    const intensityValText = intensityMode === 'random' ? levelMin + '-' + levelMax : savedLevel;
+    const durationValText = durationMode === 'random' ? durMin + '-' + durMax + 's' : savedDur + 's';
+
     card.innerHTML = `
       <h3>
-        ${esc(c.name)} <span class="id">${idHex} CH${c.channel + 1}</span>
+        ${name} <span class="id">${idHex} CH${c.channel + 1}</span>
         <span style="flex:1"></span>
-        <button class="btn-edit" data-action="edit-remote" data-name="${esc(c.name)}">Edit</button>
-        <button class="btn-del" data-action="delete-remote" data-name="${esc(c.name)}">Del</button>
+        <button class="btn-edit" data-action="edit-remote" data-name="${name}">Edit</button>
+        <button class="btn-del" data-action="delete-remote" data-name="${name}">Del</button>
       </h3>
       <div class="controls">
         <div class="slider-group">
           <label style="font-size:0.8em;color:var(--text2)">Level</label>
-          <input type="range" min="0" max="99" value="${savedLevel}" id="slider-${esc(c.name)}"
-            oninput="setCollarPref('${esc(c.name)}','level',this.value);document.getElementById('val-${esc(c.name)}').textContent=this.value">
-          <span class="val" id="val-${esc(c.name)}">${savedLevel}</span>
+          <input type="range" min="0" max="99" value="${savedLevel}" id="slider-${name}"
+            ${intensityMode === 'random' ? 'style="display:none"' : ''}
+            oninput="setCollarPref('${name}','level',this.value);document.getElementById('val-${name}').textContent=this.value">
+          <div class="range-slider" id="range-intensity-${name}" ${intensityMode === 'fixed' ? 'style="display:none"' : ''}>
+            <input type="range" class="range-min" min="0" max="99" value="${levelMin}" oninput="updateRangeMin('intensity','${name}',this)">
+            <input type="range" class="range-max" min="0" max="99" value="${levelMax}" oninput="updateRangeMax('intensity','${name}',this)">
+          </div>
+          <span class="val" id="val-${name}">${intensityValText}</span>
         </div>
       </div>
-      <div class="controls" style="margin-top:4px">
-        <div class="slider-group" id="dur-group-${esc(c.name)}" ${whilePressed ? 'style="opacity:0.45"' : ''}>
+      ${durationMode !== 'held' ? `<div class="controls" style="margin-top:4px">
+        <div class="slider-group" id="dur-group-${name}">
           <label style="font-size:0.8em;color:var(--text2)">Duration</label>
-          <input type="range" min="0.5" max="10" step="0.5" value="${savedDur}" ${whilePressed ? 'disabled' : ''}
-            id="dur-slider-${esc(c.name)}"
-            oninput="setCollarPref('${esc(c.name)}','duration',this.value);document.getElementById('dur-val-${esc(c.name)}').textContent=this.value+'s'">
-          <span class="val" id="dur-val-${esc(c.name)}">${savedDur}s</span>
+          <input type="range" min="0.5" max="10" step="0.5" value="${savedDur}"
+            id="dur-slider-${name}"
+            ${durationMode === 'random' ? 'style="display:none"' : ''}
+            oninput="setCollarPref('${name}','duration',this.value);document.getElementById('dur-val-${name}').textContent=this.value+'s'">
+          <div class="range-slider" id="range-duration-${name}" ${durationMode !== 'random' ? 'style="display:none"' : ''}>
+            <input type="range" class="range-min" min="0.5" max="10" step="0.5" value="${durMin}" oninput="updateRangeMin('duration','${name}',this)">
+            <input type="range" class="range-max" min="0.5" max="10" step="0.5" value="${durMax}" oninput="updateRangeMax('duration','${name}',this)">
+          </div>
+          <span class="val" id="dur-val-${name}">${durationValText}</span>
         </div>
-      </div>
+      </div>` : ''}
       <div class="controls action-btns" style="margin-top:6px">
-        <button class="btn-shock" data-collar="${esc(c.name)}" data-mode="shock" ${rfLocked ? 'disabled' : ''}>Zap</button>
-        <button class="btn-vibrate" data-collar="${esc(c.name)}" data-mode="vibrate" ${rfLocked ? 'disabled' : ''}>Vibrate</button>
-        <button class="btn-beep" data-collar="${esc(c.name)}" data-mode="beep" ${rfLocked ? 'disabled' : ''}>Beep</button>
-        <label style="font-size:0.8em;color:var(--text2);white-space:nowrap;cursor:pointer;margin-left:auto">
-          <input type="checkbox" id="hold-${esc(c.name)}" ${whilePressed ? 'checked' : ''}
-            onchange="toggleWhilePressed('${esc(c.name)}',this.checked)"> While pressed
-        </label>
+        <button class="btn-shock" data-collar="${name}" data-mode="shock" ${rfLocked ? 'disabled' : ''}>Zap</button>
+        <button class="btn-vibrate" data-collar="${name}" data-mode="vibrate" ${rfLocked ? 'disabled' : ''}>Vibrate</button>
+        <button class="btn-beep" data-collar="${name}" data-mode="beep" ${rfLocked ? 'disabled' : ''}>Beep</button>
+        <span style="flex:1"></span>
+        <select class="mode-select" id="intensity-mode-${name}" onchange="updateIntensityMode('${name}',this.value)">
+          <option value="fixed" ${intensityMode === 'fixed' ? 'selected' : ''}>Lvl: Fixed</option>
+          <option value="random" ${intensityMode === 'random' ? 'selected' : ''}>Lvl: Random</option>
+        </select>
+        <select class="mode-select" id="duration-mode-${name}" onchange="updateDurationMode('${name}',this.value)">
+          <option value="fixed" ${durationMode === 'fixed' ? 'selected' : ''}>Dur: Fixed</option>
+          <option value="held" ${durationMode === 'held' ? 'selected' : ''}>Dur: Held</option>
+          <option value="random" ${durationMode === 'random' ? 'selected' : ''}>Dur: Random</option>
+        </select>
       </div>
     `;
     list.appendChild(card);
@@ -382,8 +408,8 @@ function renderRemotes() {
   // Attach action button handlers
   document.querySelectorAll('.action-btns button').forEach(btn => {
     const collar = (btn as HTMLElement).dataset.collar;
-    const whilePressed = getCollarPref(collar!, 'whilePressed', 'false') === 'true';
-    if (whilePressed) {
+    const durationMode = getCollarPref(collar!, 'durationMode', 'fixed');
+    if (durationMode === 'held') {
       setupHoldButton(btn as HTMLButtonElement);
     } else {
       setupTimedButton(btn as HTMLButtonElement);
@@ -397,27 +423,83 @@ function renderRemotes() {
   });
 }
 
-function toggleWhilePressed(name: string, checked: boolean) {
-  setCollarPref(name, 'whilePressed', String(checked));
-  const durGroup = document.getElementById('dur-group-' + name);
-  const durSlider = document.getElementById('dur-slider-' + name) as HTMLInputElement | null;
-  if (durGroup) durGroup.style.opacity = checked ? '0.45' : '';
-  if (durSlider) durSlider.disabled = checked;
-  renderRemotes(); // re-attach button handlers
+function updateIntensityMode(name: string, mode: string) {
+  setCollarPref(name, 'intensityMode', mode);
+  renderRemotes();
+}
+
+function updateDurationMode(name: string, mode: string) {
+  setCollarPref(name, 'durationMode', mode);
+  renderRemotes();
+}
+
+function updateRangeMin(type: string, name: string, input: HTMLInputElement) {
+  const key = type === 'intensity' ? 'level' : 'duration';
+  const maxKey = key + 'Max';
+  const minKey = key + 'Min';
+  const maxVal = parseFloat(getCollarPref(name, maxKey, type === 'intensity' ? '60' : '5'));
+  if (parseFloat(input.value) > maxVal) {
+    input.value = String(maxVal);
+  }
+  setCollarPref(name, minKey, input.value);
+  const valEl = type === 'intensity'
+    ? document.getElementById('val-' + name)
+    : document.getElementById('dur-val-' + name);
+  if (valEl) {
+    valEl.textContent = type === 'intensity'
+      ? input.value + '-' + maxVal
+      : input.value + '-' + maxVal + 's';
+  }
+}
+
+function updateRangeMax(type: string, name: string, input: HTMLInputElement) {
+  const key = type === 'intensity' ? 'level' : 'duration';
+  const maxKey = key + 'Max';
+  const minKey = key + 'Min';
+  const minVal = parseFloat(getCollarPref(name, minKey, type === 'intensity' ? '10' : '1'));
+  if (parseFloat(input.value) < minVal) {
+    input.value = String(minVal);
+  }
+  setCollarPref(name, maxKey, input.value);
+  const valEl = type === 'intensity'
+    ? document.getElementById('val-' + name)
+    : document.getElementById('dur-val-' + name);
+  if (valEl) {
+    valEl.textContent = type === 'intensity'
+      ? minVal + '-' + input.value
+      : minVal + '-' + input.value + 's';
+  }
 }
 
 function setupTimedButton(btn: HTMLButtonElement) {
   function fire(e: Event) {
     e.preventDefault();
     if (isRfLocked()) return;
-    const collar = btn.dataset.collar;
+    const collar = btn.dataset.collar!;
     const mode = btn.dataset.mode;
-    const slider = document.getElementById('slider-' + collar) as HTMLInputElement | null;
-    const intensity = slider ? parseInt(slider.value) : 30;
-    const durSlider = document.getElementById('dur-slider-' + collar) as HTMLInputElement | null;
-    const durationSec = durSlider ? parseFloat(durSlider.value) : 2;
-    const durationMs = Math.round(durationSec * 1000);
-    send({ type: 'run_action', collar_name: collar, mode, intensity, duration_ms: durationMs });
+    const intensityMode = getCollarPref(collar, 'intensityMode', 'fixed');
+    const durationMode = getCollarPref(collar, 'durationMode', 'fixed');
+
+    const msg: any = { type: 'run_action', collar_name: collar, mode };
+
+    if (intensityMode === 'random') {
+      msg.intensity = parseInt(getCollarPref(collar, 'levelMin', '10'));
+      msg.intensity_max = parseInt(getCollarPref(collar, 'levelMax', '60'));
+    } else {
+      const slider = document.getElementById('slider-' + collar) as HTMLInputElement | null;
+      msg.intensity = slider ? parseInt(slider.value) : 30;
+    }
+
+    if (durationMode === 'random') {
+      msg.duration_ms = Math.round(parseFloat(getCollarPref(collar, 'durationMin', '1')) * 1000);
+      msg.duration_max_ms = Math.round(parseFloat(getCollarPref(collar, 'durationMax', '5')) * 1000);
+    } else {
+      const durSlider = document.getElementById('dur-slider-' + collar) as HTMLInputElement | null;
+      const durationSec = durSlider ? parseFloat(durSlider.value) : 2;
+      msg.duration_ms = Math.round(durationSec * 1000);
+    }
+
+    send(msg);
   }
   btn.addEventListener('mousedown', fire);
   btn.addEventListener('touchstart', fire, { passive: false });
@@ -1122,11 +1204,18 @@ function parseCollarId(s: string) {
 
 function setupHoldButton(btn: HTMLButtonElement) {
   function collarCommandPayload() {
-    const collar = btn.dataset.collar;
+    const collar = btn.dataset.collar!;
     const mode = btn.dataset.mode;
-    const slider = document.getElementById('slider-' + collar) as HTMLInputElement | null;
-    const intensity = slider ? parseInt(slider.value) : 30;
-    return { collar_name: collar, mode: mode, intensity: intensity };
+    const intensityMode = getCollarPref(collar, 'intensityMode', 'fixed');
+    const msg: any = { collar_name: collar, mode };
+    if (intensityMode === 'random') {
+      msg.intensity = parseInt(getCollarPref(collar, 'levelMin', '10'));
+      msg.intensity_max = parseInt(getCollarPref(collar, 'levelMax', '60'));
+    } else {
+      const slider = document.getElementById('slider-' + collar) as HTMLInputElement | null;
+      msg.intensity = slider ? parseInt(slider.value) : 30;
+    }
+    return msg;
   }
   function start(e: Event) {
     e.preventDefault();
@@ -1182,7 +1271,10 @@ w.doExport = doExport;
 w.doImport = doImport;
 w.stopAllRf = stopAllRf;
 w.setCollarPref = setCollarPref;
-w.toggleWhilePressed = toggleWhilePressed;
+w.updateIntensityMode = updateIntensityMode;
+w.updateDurationMode = updateDurationMode;
+w.updateRangeMin = updateRangeMin;
+w.updateRangeMax = updateRangeMax;
 w.stopPreset = stopPreset;
 
 // === Init ===

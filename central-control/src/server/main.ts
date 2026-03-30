@@ -719,14 +719,14 @@ function checkBoardCommandPermission(perm: DevicePermission, command: BoardComma
       return checkCommandPermission(perm, {
         collarName: command.collar_name,
         mode: command.mode,
-        intensity: command.intensity,
-        durationMs: command.duration_ms,
+        intensity: command.intensity_max ?? command.intensity,
+        durationMs: command.duration_max_ms ?? command.duration_ms,
       });
     case "start_action":
       return checkCommandPermission(perm, {
         collarName: command.collar_name,
         mode: command.mode,
-        intensity: command.intensity,
+        intensity: command.intensity_max ?? command.intensity,
         durationMs: 30_000, // max reasonable duration for held actions
       });
     case "stop_action":

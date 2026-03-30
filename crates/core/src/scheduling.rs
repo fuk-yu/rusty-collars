@@ -10,6 +10,24 @@ use crate::rf_timing::{
 
 const MICROS_PER_MILLISECOND: u64 = 1_000;
 
+/// Resolves random ranges to concrete values for preset step execution.
+pub trait StepResolver {
+    fn resolve_duration(&mut self, min: u32, max: u32) -> u32;
+    fn resolve_intensity(&mut self, min: u8, max: u8) -> u8;
+}
+
+/// Uses midpoint of range — deterministic, used for preview.
+pub struct MidpointResolver;
+
+impl StepResolver for MidpointResolver {
+    fn resolve_duration(&mut self, min: u32, max: u32) -> u32 {
+        (min + max) / 2
+    }
+    fn resolve_intensity(&mut self, min: u8, max: u8) -> u8 {
+        ((min as u16 + max as u16) / 2) as u8
+    }
+}
+
 /// A single scheduled RF transmission event.
 #[derive(Debug, Clone)]
 pub struct PresetEvent {
@@ -84,8 +102,12 @@ struct ScheduledPresetEvent {
     mode: CommandMode,
 }
 
-pub fn schedule_preset_events(preset: &Preset, collars: &[Collar]) -> Result<Vec<PresetEvent>> {
-    let mut events = collect_preset_events(preset, collars)?;
+pub fn schedule_preset_events(
+    preset: &Preset,
+    collars: &[Collar],
+    resolver: &mut dyn StepResolver,
+) -> Result<Vec<PresetEvent>> {
+    let mut events = collect_preset_events(preset, collars, resolver)?;
     serialize_preset_events(&mut events);
 
     Ok(events
@@ -95,6 +117,7 @@ pub fn schedule_preset_events(preset: &Preset, collars: &[Collar]) -> Result<Vec
 }
 
 pub fn preview_preset(preset: &Preset, collars: &[Collar]) -> Result<PresetPreview> {
+    let mut resolver = MidpointResolver;
     let total_duration_us = preset
         .tracks
         .iter()
@@ -102,12 +125,12 @@ pub fn preview_preset(preset: &Preset, collars: &[Collar]) -> Result<PresetPrevi
             track
                 .steps
                 .iter()
-                .map(|step| u64::from(step.duration_ms) * MICROS_PER_MILLISECOND)
+                .map(|step| u64::from(step.midpoint_duration()) * MICROS_PER_MILLISECOND)
                 .sum::<u64>()
         })
         .max()
         .unwrap_or(0);
-    let mut events = collect_preset_events(preset, collars)?;
+    let mut events = collect_preset_events(preset, collars, &mut resolver)?;
     serialize_preset_events(&mut events);
 
     Ok(PresetPreview {
@@ -140,7 +163,11 @@ pub fn preview_preset(preset: &Preset, collars: &[Collar]) -> Result<PresetPrevi
     })
 }
 
-fn collect_preset_events(preset: &Preset, collars: &[Collar]) -> Result<Vec<ScheduledPresetEvent>> {
+fn collect_preset_events(
+    preset: &Preset,
+    collars: &[Collar],
+    resolver: &mut dyn StepResolver,
+) -> Result<Vec<ScheduledPresetEvent>> {
     let mut events: Vec<ScheduledPresetEvent> = Vec::new();
 
     for (track_index, track) in preset.tracks.iter().enumerate() {
@@ -158,7 +185,21 @@ fn collect_preset_events(preset: &Preset, collars: &[Collar]) -> Result<Vec<Sche
 
         let mut time_us = 0u64;
         for (step_index, step) in track.steps.iter().enumerate() {
-            let end_time_us = time_us + u64::from(step.duration_ms) * MICROS_PER_MILLISECOND;
+            // Resolve random ranges to concrete values
+            let duration_ms = match step.duration_max_ms {
+                Some(max) if max > step.duration_ms => {
+                    resolver.resolve_duration(step.duration_ms, max)
+                }
+                _ => step.duration_ms,
+            };
+            let intensity = match step.intensity_max {
+                Some(max) if max > step.intensity && step.mode.has_intensity() => {
+                    resolver.resolve_intensity(step.intensity, max)
+                }
+                _ => step.intensity,
+            };
+
+            let end_time_us = time_us + u64::from(duration_ms) * MICROS_PER_MILLISECOND;
             if let Some(mode) = step.mode.to_command_mode() {
                 let mut step_events = Vec::new();
                 schedule_step_events(
@@ -168,7 +209,7 @@ fn collect_preset_events(preset: &Preset, collars: &[Collar]) -> Result<Vec<Sche
                     collar.collar_id,
                     collar.channel,
                     mode.to_rf_byte(),
-                    step.intensity,
+                    intensity,
                 )
                 .map_err(|err| {
                     anyhow!(
@@ -358,6 +399,8 @@ mod tests {
                         mode: crate::protocol::PresetStepMode::Vibrate,
                         intensity: 50,
                         duration_ms: 500,
+                        intensity_max: None,
+                        duration_max_ms: None,
                     }],
                 },
                 crate::protocol::PresetTrack {
@@ -366,12 +409,14 @@ mod tests {
                         mode: crate::protocol::PresetStepMode::Vibrate,
                         intensity: 50,
                         duration_ms: 500,
+                        intensity_max: None,
+                        duration_max_ms: None,
                     }],
                 },
             ],
         };
 
-        let events = schedule_preset_events(&preset, &collars).unwrap();
+        let events = schedule_preset_events(&preset, &collars, &mut MidpointResolver).unwrap();
         assert_eq!(times(&events), vec![0, 132_450, 288_300, 420_750]);
     }
 
@@ -398,6 +443,8 @@ mod tests {
                         mode: crate::protocol::PresetStepMode::Beep,
                         intensity: 0,
                         duration_ms: 500,
+                        intensity_max: None,
+                        duration_max_ms: None,
                     }],
                 },
                 crate::protocol::PresetTrack {
@@ -406,6 +453,8 @@ mod tests {
                         mode: crate::protocol::PresetStepMode::Shock,
                         intensity: 25,
                         duration_ms: 500,
+                        intensity_max: None,
+                        duration_max_ms: None,
                     }],
                 },
             ],

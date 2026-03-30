@@ -4,13 +4,16 @@ import * as ws from "../ws.js";
 import { navigate } from "../router.js";
 import { esc, formatCollarId, formatDuration } from "../utils.js";
 import { openPresetEditor } from "../components/preset-editor.js";
-import type { Collar, CommandMode, Preset } from "../../shared/protocol.js";
+import type { Collar, CommandMode, Preset, StartActionCommand, RunActionCommand } from "../../shared/protocol.js";
 import type { CollarPermission, DevicePermission, DeviceSnapshot, ModeLimit, UserPreset } from "../../shared/types.js";
 
 interface CollarState {
   intensity: number;
+  intensityMax: number;
+  intensityMode: "fixed" | "random";
   durationMs: number;
-  whilePressed: boolean;
+  durationMaxMs: number;
+  durationMode: "fixed" | "held" | "random";
 }
 
 interface DevicePageState {
@@ -27,7 +30,7 @@ interface DevicePageState {
 
 function getCollarState(collarName: string): CollarState {
   if (!pageState.collarStates[collarName]) {
-    pageState.collarStates[collarName] = { intensity: 30, durationMs: 1500, whilePressed: false };
+    pageState.collarStates[collarName] = { intensity: 30, intensityMax: 60, intensityMode: "fixed", durationMs: 1500, durationMaxMs: 5000, durationMode: "fixed" };
   }
   return pageState.collarStates[collarName]!;
 }
@@ -171,11 +174,24 @@ function renderCollarPanel(collar: Collar, snap: DeviceSnapshot): string {
   const beepAllowed = snap.isOwner || (perm?.beep !== null && perm?.beep !== undefined);
 
   const maxInt = snap.isOwner ? 99 : Math.max(perm?.shock?.maxIntensity ?? 0, perm?.vibrate?.maxIntensity ?? 0, 0);
-  const clampedInt = Math.min(cs.intensity, maxInt > 0 ? maxInt : 99);
+  const effectiveMaxInt = maxInt > 0 ? maxInt : 99;
+  const clampedInt = Math.min(cs.intensity, effectiveMaxInt);
+  const clampedIntMax = Math.min(cs.intensityMax, effectiveMaxInt);
   const maxDur = snap.isOwner ? 30000 : Math.max(
     perm?.shock?.maxDurationMs ?? 0, perm?.vibrate?.maxDurationMs ?? 0, perm?.beep?.maxDurationMs ?? 0, 0);
-  const clampedDur = Math.min(cs.durationMs, maxDur > 0 ? maxDur : 30000);
+  const effectiveMaxDur = maxDur > 0 ? maxDur : 30000;
+  const clampedDur = Math.min(cs.durationMs, effectiveMaxDur);
+  const clampedDurMax = Math.min(cs.durationMaxMs, effectiveMaxDur);
   const durSec = (clampedDur / 1000).toFixed(1);
+  const durMaxSec = (clampedDurMax / 1000).toFixed(1);
+  const maxDurSec = (effectiveMaxDur / 1000).toFixed(1);
+
+  const isHeld = cs.durationMode === "held";
+  const isIntRandom = cs.intensityMode === "random";
+  const isDurRandom = cs.durationMode === "random";
+
+  const intensityDisplay = isIntRandom ? `${clampedInt}-${clampedIntMax}` : String(clampedInt);
+  const durationDisplay = isHeld ? "hold" : isDurRandom ? `${durSec}s-${durMaxSec}s` : `${durSec}s`;
 
   const limitsText = !snap.isOwner && perm ? buildLimitsText(perm) : "";
 
@@ -187,32 +203,43 @@ function renderCollarPanel(collar: Collar, snap: DeviceSnapshot): string {
       </div>
       <div class="flex items-center gap-3 mb-2">
         <span class="text-xs text-gray-500 w-14 shrink-0">Level</span>
-        <input type="range" min="0" max="${maxInt > 0 ? maxInt : 99}" value="${clampedInt}"
-          class="collar-intensity flex-1 accent-blue-500" data-collar="${esc(collar.name)}">
-        <span class="collar-intensity-val text-sm font-mono w-8 text-right text-gray-300" data-collar="${esc(collar.name)}">${clampedInt}</span>
+        <select class="collar-intensity-mode bg-gray-700 border border-gray-600 rounded text-xs px-1 py-0.5 text-gray-300" data-collar="${esc(collar.name)}">
+          <option value="fixed" ${cs.intensityMode === "fixed" ? "selected" : ""}>Fixed</option>
+          <option value="random" ${cs.intensityMode === "random" ? "selected" : ""}>Random</option>
+        </select>
+        <input type="range" min="0" max="${effectiveMaxInt}" value="${clampedInt}"
+          class="collar-intensity flex-1 accent-blue-500" data-collar="${esc(collar.name)}" style="${isIntRandom ? "display:none" : ""}">
+        <div class="cc-range-slider flex-1" data-collar="${esc(collar.name)}" data-field="intensity" style="${isIntRandom ? "" : "display:none"}">
+          <input type="range" class="range-min" min="0" max="${effectiveMaxInt}" value="${clampedInt}">
+          <input type="range" class="range-max" min="0" max="${effectiveMaxInt}" value="${clampedIntMax}">
+        </div>
+        <span class="collar-intensity-val text-sm font-mono w-12 text-right text-gray-300" data-collar="${esc(collar.name)}">${intensityDisplay}</span>
       </div>
       <div class="flex items-center gap-3 mb-3">
         <span class="text-xs text-gray-500 w-14 shrink-0">Duration</span>
-        <input type="range" min="0.5" max="${(maxDur > 0 ? maxDur : 30000) / 1000}" step="0.5" value="${durSec}"
-          class="collar-duration flex-1 accent-blue-500 ${cs.whilePressed ? "opacity-30" : ""}" data-collar="${esc(collar.name)}" ${cs.whilePressed ? "disabled" : ""}>
-        <span class="collar-duration-val text-sm font-mono w-10 text-right text-gray-300" data-collar="${esc(collar.name)}">${cs.whilePressed ? "hold" : `${durSec}s`}</span>
-      </div>
-      <div class="flex items-center gap-2 mb-3">
-        <label class="flex items-center gap-1.5 cursor-pointer select-none">
-          <input type="checkbox" class="collar-while-pressed accent-blue-500" data-collar="${esc(collar.name)}" ${cs.whilePressed ? "checked" : ""}>
-          <span class="text-xs text-gray-400">While pressed</span>
-        </label>
+        <select class="collar-duration-mode bg-gray-700 border border-gray-600 rounded text-xs px-1 py-0.5 text-gray-300" data-collar="${esc(collar.name)}">
+          <option value="fixed" ${cs.durationMode === "fixed" ? "selected" : ""}>Fixed</option>
+          <option value="held" ${cs.durationMode === "held" ? "selected" : ""}>Held</option>
+          <option value="random" ${cs.durationMode === "random" ? "selected" : ""}>Random</option>
+        </select>
+        <input type="range" min="0.5" max="${maxDurSec}" step="0.5" value="${durSec}"
+          class="collar-duration flex-1 accent-blue-500" data-collar="${esc(collar.name)}" style="${cs.durationMode === "fixed" ? "" : "display:none"}">
+        <div class="cc-range-slider flex-1" data-collar="${esc(collar.name)}" data-field="duration" style="${isDurRandom ? "" : "display:none"}">
+          <input type="range" class="range-min" min="0.5" max="${maxDurSec}" step="0.5" value="${durSec}">
+          <input type="range" class="range-max" min="0.5" max="${maxDurSec}" step="0.5" value="${durMaxSec}">
+        </div>
+        <span class="collar-duration-val text-sm font-mono w-16 text-right text-gray-300" data-collar="${esc(collar.name)}">${durationDisplay}</span>
       </div>
       <div class="grid grid-cols-3 gap-2">
-        ${renderActionBtn(collar.name, "shock", shockAllowed, cs.whilePressed)}
-        ${renderActionBtn(collar.name, "vibrate", vibrateAllowed, cs.whilePressed)}
-        ${renderActionBtn(collar.name, "beep", beepAllowed, cs.whilePressed)}
+        ${renderActionBtn(collar.name, "shock", shockAllowed, isHeld)}
+        ${renderActionBtn(collar.name, "vibrate", vibrateAllowed, isHeld)}
+        ${renderActionBtn(collar.name, "beep", beepAllowed, isHeld)}
       </div>
       ${limitsText ? `<div class="text-xs text-gray-500 mt-3">${limitsText}</div>` : ""}
     </div>`;
 }
 
-function renderActionBtn(collarName: string, mode: CommandMode, allowed: boolean, whilePressed: boolean): string {
+function renderActionBtn(collarName: string, mode: CommandMode, allowed: boolean, isHeld: boolean): string {
   const active = pageState.activeActions.has(`${collarName}:${mode}`);
   const colorMap: Record<string, { normal: string; active: string }> = {
     shock: { normal: "bg-red-800 hover:bg-red-700 border-red-700", active: "bg-red-500 ring-2 ring-red-400 border-red-400" },
@@ -221,11 +248,11 @@ function renderActionBtn(collarName: string, mode: CommandMode, allowed: boolean
   };
   const colors = colorMap[mode]!;
   const cls = active ? colors.active : colors.normal;
-  const hint = whilePressed ? "hold" : "timed";
+  const hint = isHeld ? "hold" : "timed";
 
   return `
     <button class="action-btn ${cls} ${allowed ? "" : "opacity-25 cursor-not-allowed"} text-white text-sm font-semibold rounded-xl py-3 border select-none transition-all"
-      data-collar="${esc(collarName)}" data-mode="${mode}" data-held="${whilePressed ? "1" : "0"}" ${allowed ? "" : "disabled"}>
+      data-collar="${esc(collarName)}" data-mode="${mode}" data-held="${isHeld ? "1" : "0"}" ${allowed ? "" : "disabled"}>
       ${mode[0]!.toUpperCase() + mode.slice(1)}
       <div class="text-[10px] font-normal opacity-60 mt-0.5">${hint}</div>
     </button>`;
@@ -476,7 +503,18 @@ export function bindDeviceEvents(root: HTMLElement): void {
     ws.sendDeviceCommand(pageState.uuid, { type: "stop_preset" });
   });
 
-  // Per-collar intensity sliders
+  // Intensity mode selects
+  root.querySelectorAll(".collar-intensity-mode").forEach((sel) => {
+    sel.addEventListener("change", (e) => {
+      const select = e.target as HTMLSelectElement;
+      const collarName = select.dataset.collar!;
+      const cs = getCollarState(collarName);
+      cs.intensityMode = select.value as "fixed" | "random";
+      triggerRender();
+    });
+  });
+
+  // Per-collar intensity sliders (fixed mode)
   root.querySelectorAll(".collar-intensity").forEach((slider) => {
     slider.addEventListener("input", (e) => {
       const input = e.target as HTMLInputElement;
@@ -488,8 +526,40 @@ export function bindDeviceEvents(root: HTMLElement): void {
     });
   });
 
-  // Per-collar duration sliders
-  root.querySelectorAll(".collar-duration").forEach((slider) => {
+  // Intensity range sliders (random mode, dual-thumb)
+  root.querySelectorAll('.cc-range-slider[data-field="intensity"]').forEach((div) => {
+    const collarName = (div as HTMLElement).dataset.collar!;
+    const cs = getCollarState(collarName);
+    const minInput = div.querySelector(".range-min") as HTMLInputElement;
+    const maxInput = div.querySelector(".range-max") as HTMLInputElement;
+    const valEl = root.querySelector(`.collar-intensity-val[data-collar="${collarName}"]`);
+    minInput.addEventListener("input", () => {
+      let v = parseInt(minInput.value, 10);
+      if (v > parseInt(maxInput.value, 10)) { v = parseInt(maxInput.value, 10); minInput.value = String(v); }
+      cs.intensity = v;
+      if (valEl) valEl.textContent = `${cs.intensity}-${cs.intensityMax}`;
+    });
+    maxInput.addEventListener("input", () => {
+      let v = parseInt(maxInput.value, 10);
+      if (v < parseInt(minInput.value, 10)) { v = parseInt(minInput.value, 10); maxInput.value = String(v); }
+      cs.intensityMax = v;
+      if (valEl) valEl.textContent = `${cs.intensity}-${cs.intensityMax}`;
+    });
+  });
+
+  // Duration mode selects
+  root.querySelectorAll(".collar-duration-mode").forEach((sel) => {
+    sel.addEventListener("change", (e) => {
+      const select = e.target as HTMLSelectElement;
+      const collarName = select.dataset.collar!;
+      const cs = getCollarState(collarName);
+      cs.durationMode = select.value as "fixed" | "held" | "random";
+      triggerRender();
+    });
+  });
+
+  // Per-collar duration sliders (fixed mode)
+  root.querySelectorAll("input.collar-duration").forEach((slider) => {
     slider.addEventListener("input", (e) => {
       const input = e.target as HTMLInputElement;
       const collarName = input.dataset.collar!;
@@ -500,32 +570,46 @@ export function bindDeviceEvents(root: HTMLElement): void {
     });
   });
 
-  // While-pressed toggles
-  root.querySelectorAll(".collar-while-pressed").forEach((checkbox) => {
-    checkbox.addEventListener("change", (e) => {
-      const input = e.target as HTMLInputElement;
-      const collarName = input.dataset.collar!;
-      const cs = getCollarState(collarName);
-      cs.whilePressed = input.checked;
-      triggerRender();
+  // Duration range sliders (random mode, dual-thumb)
+  root.querySelectorAll('.cc-range-slider[data-field="duration"]').forEach((div) => {
+    const collarName = (div as HTMLElement).dataset.collar!;
+    const cs = getCollarState(collarName);
+    const minInput = div.querySelector(".range-min") as HTMLInputElement;
+    const maxInput = div.querySelector(".range-max") as HTMLInputElement;
+    const valEl = root.querySelector(`.collar-duration-val[data-collar="${collarName}"]`);
+    minInput.addEventListener("input", () => {
+      let v = parseFloat(minInput.value);
+      if (v > parseFloat(maxInput.value)) { v = parseFloat(maxInput.value); minInput.value = String(v); }
+      cs.durationMs = Math.round(v * 1000);
+      if (valEl) valEl.textContent = `${(cs.durationMs / 1000).toFixed(1)}s-${(cs.durationMaxMs / 1000).toFixed(1)}s`;
+    });
+    maxInput.addEventListener("input", () => {
+      let v = parseFloat(maxInput.value);
+      if (v < parseFloat(minInput.value)) { v = parseFloat(minInput.value); maxInput.value = String(v); }
+      cs.durationMaxMs = Math.round(v * 1000);
+      if (valEl) valEl.textContent = `${(cs.durationMs / 1000).toFixed(1)}s-${(cs.durationMaxMs / 1000).toFixed(1)}s`;
     });
   });
 
-  // Action buttons — timed click or hold-to-activate depending on whilePressed
+  // Action buttons — timed click or hold-to-activate depending on durationMode
   root.querySelectorAll(".action-btn").forEach((btn) => {
     const el = btn as HTMLElement;
     const collarName = el.dataset.collar!;
     const mode = el.dataset.mode! as CommandMode;
     const cs = getCollarState(collarName);
 
-    if (cs.whilePressed) {
+    if (cs.durationMode === "held") {
       bindHoldButton(
         el,
         () => {
           const intensity = mode === "beep" ? 0 : cs.intensity;
+          const cmd: StartActionCommand = { type: "start_action", collar_name: collarName, mode, intensity };
+          if (mode !== "beep" && cs.intensityMode === "random") {
+            cmd.intensity_max = cs.intensityMax;
+          }
           pageState.activeActions.add(`${collarName}:${mode}`);
           try {
-            ws.sendDeviceCommand(pageState.uuid, { type: "start_action", collar_name: collarName, mode, intensity });
+            ws.sendDeviceCommand(pageState.uuid, cmd);
           } catch {
             showBanner("error", "Not connected");
           }
@@ -544,10 +628,17 @@ export function bindDeviceEvents(root: HTMLElement): void {
     } else {
       el.addEventListener("click", () => {
         const intensity = mode === "beep" ? 0 : cs.intensity;
+        const cmd: RunActionCommand = {
+          type: "run_action", collar_name: collarName, mode, intensity, duration_ms: cs.durationMs,
+        };
+        if (mode !== "beep" && cs.intensityMode === "random") {
+          cmd.intensity_max = cs.intensityMax;
+        }
+        if (cs.durationMode === "random") {
+          cmd.duration_max_ms = cs.durationMaxMs;
+        }
         try {
-          ws.sendDeviceCommand(pageState.uuid, {
-            type: "run_action", collar_name: collarName, mode, intensity, duration_ms: cs.durationMs,
-          });
+          ws.sendDeviceCommand(pageState.uuid, cmd);
         } catch {
           showBanner("error", "Not connected");
         }

@@ -12,6 +12,59 @@ input[type="range"] {
   accent-color: #3b82f6;
 }
 
+/* Dual-thumb range slider for randomization controls */
+.cc-range-slider {
+  position: relative;
+  height: 20px;
+}
+.cc-range-slider input[type="range"] {
+  position: absolute;
+  width: 100%;
+  top: 0;
+  height: 20px;
+  pointer-events: none;
+  -webkit-appearance: none;
+  appearance: none;
+  background: transparent;
+  margin: 0;
+}
+.cc-range-slider input[type="range"]::-webkit-slider-thumb {
+  pointer-events: all;
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #3b82f6;
+  cursor: pointer;
+  border: none;
+}
+.cc-range-slider input[type="range"]::-moz-range-thumb {
+  pointer-events: all;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #3b82f6;
+  cursor: pointer;
+  border: none;
+}
+.cc-range-slider input[type="range"]::-webkit-slider-runnable-track {
+  height: 4px;
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 2px;
+}
+.cc-range-slider input[type="range"]::-moz-range-track {
+  height: 4px;
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 2px;
+}
+.cc-range-slider input[type="range"].range-min {
+  z-index: 1;
+}
+.cc-range-slider input[type="range"].range-max {
+  z-index: 2;
+}
+
 /* Drag-and-drop feedback */
 .drag-over {
   border-top: 2px solid #3b82f6 !important;
