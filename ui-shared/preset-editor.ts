@@ -195,10 +195,10 @@ function injectStyles(): void {
     .pe-box button.accent { background: var(--pe-ok); color: #000; font-weight: bold; }
     .pe-box button.danger { background: var(--pe-danger); }
     .pe-track { background: var(--pe-surface); border-radius: 6px; padding: 8px; margin-bottom: 10px; }
-    .pe-track-header { cursor: pointer; user-select: none; display: flex; justify-content: space-between; align-items: center; }
+    .pe-track-header { cursor: pointer; user-select: none; display: flex; align-items: center; gap: 6px; }
     .pe-track-header .fold-arrow { transition: transform 0.15s; display: inline-block; }
     .pe-track-header .fold-arrow.open { transform: rotate(90deg); }
-    .pe-track-body { display: none; }
+    .pe-track-body { display: none; margin-top: 8px; }
     .pe-track-body.open { display: block; }
     .pe-step { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; padding: 6px; border-radius: 6px; background: rgba(255,255,255,0.03); }
     .pe-step select, .pe-step input { font-size: 0.85em; padding: 4px 6px; }
@@ -390,11 +390,10 @@ function renderEditorTracks(): void {
 
     div.innerHTML = `
       <div class="pe-track-header" data-track-toggle="${ti}">
-        <span>
-          <span class="fold-arrow ${isOpen ? "open" : ""}">&#9654;</span>
-          Track: <select data-track-collar="${ti}" onclick="event.stopPropagation()">${collarOpts}</select>
-          <span style="color:var(--pe-text2);font-size:0.85em">(${track.steps.length} steps)</span>
-        </span>
+        <span class="fold-arrow ${isOpen ? "open" : ""}">&#9654;</span>
+        <span style="color:var(--pe-text2);font-size:0.85em">Collar:</span>
+        <select data-track-collar="${ti}" onclick="event.stopPropagation()" style="flex:1;min-width:0">${collarOpts}</select>
+        <span style="color:var(--pe-text2);font-size:0.85em">(${track.steps.length} steps)</span>
         <button class="danger" data-track-remove="${ti}" style="padding:0.3rem 0.6rem">X</button>
       </div>
       <div class="pe-track-body ${isOpen ? "open" : ""}" id="pe-track-body-${ti}"></div>`;
