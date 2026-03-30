@@ -25,6 +25,9 @@ if [[ "$OPT_CLEAN" == true ]]; then
   run_in_env cargo +esp clean
 fi
 
+# Build the Vite frontend (produces frontend/dist/index.html for embedding)
+(cd "$project_dir/frontend" && npm install --prefer-offline --no-audit && npm run build)
+
 run_in_env cargo +esp build --release $CARGO_FEATURES
 
 # Convert ELF to flashable binary (use esptool.py — espflash's conversion is broken for P4)

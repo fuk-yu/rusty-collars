@@ -24,10 +24,15 @@ fn main() {
     }
     println!("cargo:rerun-if-env-changed=MCU");
 
-    // Gzip the frontend HTML at build time (saves ~29KB heap at runtime)
+    // Gzip the Vite-built frontend HTML at build time (saves ~29KB heap at runtime).
+    // Run `cd frontend && npm run build` before `cargo build` if dist is missing.
     let version = app_version();
-    let html =
-        std::fs::read_to_string("frontend/index.html").expect("frontend/index.html not found");
+    let frontend_path = "frontend/dist/index.html";
+    let html = std::fs::read_to_string(frontend_path).unwrap_or_else(|_| {
+        panic!(
+            "{frontend_path} not found — run `cd frontend && npm install && npm run build` first"
+        )
+    });
     let html = html.replace("__RUSTY_COLLARS_APP_VERSION__", &version);
     let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::best());
     encoder

@@ -1,5 +1,7 @@
-// Shared preset editor — used by both the debug server and central-control.
+// Shared preset editor — extracted from the firmware's preset editor.
 // Self-contained: injects its own CSS, creates its own overlay DOM.
+// Uses CSS variables for theming (define --bg, --surface, --surface2, --text,
+// --text2, --accent, --ok, --warn, --danger on :root or a parent element).
 
 // ── Types (structurally compatible with both projects' protocol types) ──
 
@@ -74,6 +76,7 @@ const DURATION_STEP_MS = 500;
 const PREVIEW_DEBOUNCE_MS = 150;
 const TRACK_COLORS = ["#4ecca3", "#ffc947", "#e94560", "#6fa8ff", "#ff8fab", "#b8de6f"];
 const MODE_EMOJI: Record<string, string> = { shock: "\u26A1", vibrate: "\u3030\uFE0F", beep: "\uD83D\uDD14", pause: "\u23F8\uFE0F" };
+const MODE_LABEL: Record<string, string> = { shock: "Shock", vibrate: "Vibrate", beep: "Beep", pause: "Pause" };
 
 // ── State ──
 
@@ -117,8 +120,17 @@ function fmtUs(us: number): string {
   return `${ms}ms`;
 }
 
+function fmtMs(ms: number): string {
+  return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`;
+}
+
+function describeMode(mode: string): string {
+  return MODE_LABEL[mode] ?? mode;
+}
+
 function segTitle(ev: EditorPresetPreviewEvent): string {
-  return `Track ${ev.track_index + 1}, step ${ev.step_index + 1}, ${ev.collar_name}, ${ev.mode}, level ${ev.intensity}, at ${fmtUs(ev.actual_time_us)}, requested ${fmtUs(ev.requested_time_us)}, TX ${fmtUs(ev.transmit_duration_us)}`;
+  const delayUs = ev.actual_time_us - ev.requested_time_us;
+  return `Track ${ev.track_index + 1}, step ${ev.step_index + 1}, ${ev.collar_name}, ${describeMode(ev.mode)}, level ${ev.intensity}, requested ${fmtUs(ev.requested_time_us)}, actual ${fmtUs(ev.actual_time_us)}, delay ${fmtUs(delayUs)}, TX ${fmtUs(ev.transmit_duration_us)}`;
 }
 
 function esc(value: string): string {
@@ -151,6 +163,7 @@ function getMaxDuration(collarName: string, mode: string): number {
 }
 
 // ── CSS injection ──
+// Uses CSS variables from the host page with fallback defaults (firmware theme).
 
 let stylesInjected = false;
 
@@ -159,47 +172,71 @@ function injectStyles(): void {
   stylesInjected = true;
   const style = document.createElement("style");
   style.textContent = `
-    .pe-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 100; overflow-y: auto; }
-    .pe-overlay.active { display: flex; justify-content: center; padding: 20px; }
-    .pe-box { background: #0d1117; border: 1px solid rgba(255,255,255,0.08); border-radius: 18px; padding: 1.25rem; width: 100%; max-width: 650px; max-height: 90vh; overflow-y: auto; box-shadow: 0 24px 60px rgba(0,0,0,0.5); color: #e6edf3; font-family: "IBM Plex Sans", "Segoe UI", sans-serif; }
-    .pe-box h2 { margin: 0 0 1rem; font-size: 1.1rem; }
-    .pe-box label span { color: #9da7b3; font-size: 0.88rem; }
-    .pe-box input, .pe-box select { border-radius: 10px; border: 1px solid rgba(255,255,255,0.08); background: #1f2630; color: #e6edf3; font: inherit; width: 100%; padding: 0.7rem 0.8rem; box-sizing: border-box; }
-    .pe-box button { font: inherit; border-radius: 10px; border: 1px solid rgba(255,255,255,0.08); background: #1f2630; color: #e6edf3; padding: 0.7rem 1rem; cursor: pointer; }
-    .pe-box button:hover { border-color: rgba(255,255,255,0.16); }
-    .pe-box button.accent { background: linear-gradient(135deg, #1f8bff, #125ec2); }
-    .pe-box button.danger { background: linear-gradient(135deg, #cc4d5f, #922c3a); }
-    .pe-track { background: #161b22; border-radius: 14px; padding: 0.75rem; margin-bottom: 0.75rem; }
-    .pe-track-header { cursor: pointer; user-select: none; display: flex; justify-content: space-between; align-items: center; gap: 0.5rem; }
+    .pe-overlay {
+      display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.7);
+      z-index: 100; overflow-y: auto;
+      --pe-bg: var(--bg, #1a1a2e);
+      --pe-surface: var(--surface, var(--panel, #16213e));
+      --pe-surface2: var(--surface2, var(--panel-strong, #0f3460));
+      --pe-text: var(--text, #eee);
+      --pe-text2: var(--text2, var(--muted, #aaa));
+      --pe-accent: var(--accent, #e94560);
+      --pe-ok: var(--ok, #4ecca3);
+      --pe-warn: var(--warn, #ffc947);
+      --pe-danger: var(--danger, #e94560);
+    }
+    .pe-overlay.active { display: flex; justify-content: center; padding: 10px; }
+    .pe-box { background: var(--pe-bg); border-radius: 8px; padding: 12px; width: 100%; max-width: 600px; max-height: 90vh; overflow-y: auto; color: var(--pe-text); font-family: system-ui, sans-serif; }
+    .pe-box h2 { margin-bottom: 14px; font-size: 1.1em; }
+    .pe-box label span { color: var(--pe-text2); font-size: 0.85em; }
+    .pe-box input, .pe-box select { background: var(--pe-surface2); color: var(--pe-text); border: 1px solid #333; border-radius: 4px; padding: 6px 8px; font: inherit; width: 100%; box-sizing: border-box; font-size: 0.9em; }
+    .pe-box button { font: inherit; border: none; border-radius: 4px; padding: 8px 14px; font-size: 0.9em; color: #fff; background: var(--pe-surface2); cursor: pointer; }
+    .pe-box button:active { opacity: 0.8; }
+    .pe-box button.accent { background: var(--pe-ok); color: #000; font-weight: bold; }
+    .pe-box button.danger { background: var(--pe-danger); }
+    .pe-track { background: var(--pe-surface); border-radius: 6px; padding: 8px; margin-bottom: 10px; }
+    .pe-track-header { cursor: pointer; user-select: none; display: flex; justify-content: space-between; align-items: center; }
     .pe-track-header .fold-arrow { transition: transform 0.15s; display: inline-block; }
     .pe-track-header .fold-arrow.open { transform: rotate(90deg); }
-    .pe-track-body { display: none; margin-top: 0.5rem; }
+    .pe-track-body { display: none; }
     .pe-track-body.open { display: block; }
-    .pe-step { display: flex; flex-direction: column; gap: 0.5rem; margin-bottom: 0.5rem; padding: 0.6rem; border-radius: 10px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); }
-    .pe-step-header { display: flex; gap: 0.5rem; align-items: center; }
+    .pe-step { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; padding: 6px; border-radius: 6px; background: rgba(255,255,255,0.03); }
+    .pe-step select, .pe-step input { font-size: 0.85em; padding: 4px 6px; }
+    .pe-step-header { display: flex; gap: 4px; align-items: center; }
     .pe-step-header select { flex: 1; min-width: 0; }
-    .pe-slider { display: flex; align-items: center; gap: 0.5rem; }
-    .pe-slider .slider-label { width: 5rem; flex-shrink: 0; font-size: 0.84rem; color: #9da7b3; }
-    .pe-slider input[type=range] { flex: 1; accent-color: #1f8bff; }
-    .pe-slider .slider-val { min-width: 2.5rem; text-align: right; font-size: 0.84rem; color: #9da7b3; }
-    .pe-actions { display: flex; gap: 0.6rem; margin-top: 1rem; justify-content: flex-end; }
-    .pe-limits { margin-top: 0.75rem; padding: 0.6rem; border-radius: 10px; background: #161b22; border: 1px solid rgba(255,255,255,0.08); font-size: 0.8rem; color: #9da7b3; }
-    .pe-preview { margin-top: 1rem; background: #161b22; border-radius: 14px; padding: 0.75rem; }
-    .pe-preview summary { cursor: pointer; font-weight: 600; font-size: 0.92rem; }
-    .pe-preview .ep-status { font-size: 0.84rem; color: #9da7b3; margin-top: 0.5rem; }
-    .pe-preview .ep-status.ep-error { color: #cc4d5f; }
-    .pe-preview .ep-summary { font-size: 0.8rem; color: #9da7b3; margin-top: 0.5rem; }
-    .ep-timeline { margin-top: 0.5rem; }
-    .ep-timeline-scale { display: flex; justify-content: space-between; margin-bottom: 3px; font-size: 0.72rem; color: #9da7b3; font-family: monospace; }
-    .ep-timeline-bar { display: flex; border-radius: 6px; overflow: hidden; background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08); height: 20px; }
-    .ep-seg { flex: none; height: 100%; border: none; border-radius: 0; cursor: pointer; opacity: 0.85; min-width: 1px; padding: 0; background: none; }
-    .ep-seg:hover, .ep-seg.active { opacity: 1; outline: none; }
-    .ep-table { width: 100%; border-collapse: collapse; font-size: 0.72rem; margin-top: 0.5rem; }
-    .ep-table th, .ep-table td { text-align: left; padding: 3px 5px; border-bottom: 1px solid rgba(255,255,255,0.08); vertical-align: top; white-space: nowrap; }
-    .ep-table th { color: #9da7b3; font-weight: 600; }
-    .ep-table .hex { white-space: normal; word-break: break-all; }
+    .pe-drag-handle { cursor: grab; color: var(--pe-text2); font-size: 1rem; line-height: 1; padding: 2px 2px; user-select: none; flex-shrink: 0; }
+    .pe-drag-handle:active { cursor: grabbing; }
+    .pe-step-controls { display: flex; flex-direction: column; gap: 4px; }
+    .pe-slider { display: flex; align-items: center; gap: 4px; min-width: 0; width: 100%; }
+    .pe-slider .slider-label { width: 52px; flex-shrink: 0; font-size: 0.8em; color: var(--pe-text2); }
+    .pe-slider input[type=range] { flex: 1; accent-color: var(--pe-accent); }
+    .pe-slider .slider-val { min-width: 28px; text-align: right; font-size: 0.85em; color: var(--pe-text2); }
+    .pe-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }
+    .pe-header h2 { margin: 0; font-size: 1.1em; }
+    .pe-header-actions { display: flex; gap: 8px; }
+    .pe-limits { margin-top: 0.75rem; padding: 0.6rem; border-radius: 6px; background: var(--pe-surface); font-size: 0.8rem; color: var(--pe-text2); }
+    .pe-preview { margin-top: 12px; background: var(--pe-surface); border-radius: 6px; padding: 10px; }
+    .pe-preview summary { cursor: pointer; font-weight: bold; }
+    .pe-preview .ep-status { font-size: 0.85em; color: var(--pe-text2); margin-top: 8px; }
+    .pe-preview .ep-status.ep-error { color: var(--pe-warn); }
+    .pe-preview .ep-summary { font-size: 0.8em; color: var(--pe-text2); margin-top: 8px; }
+    .pe-preview-legend { margin-top: 10px; font-size: 0.75em; line-height: 1.4; color: var(--pe-text2); padding: 8px 10px; border-radius: 6px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.06); }
+    .pe-preview-legend-row + .pe-preview-legend-row { margin-top: 4px; }
+    .pe-preview-legend strong { color: var(--pe-text); font-weight: 600; }
+    .ep-timeline { margin-top: 10px; }
+    .ep-timeline-scale { display: flex; justify-content: space-between; gap: 8px; margin-bottom: 4px; font-size: 0.72em; color: var(--pe-text2); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .ep-timeline-bar { display: flex; border-radius: 6px; overflow: hidden; background: linear-gradient(180deg, rgba(255,255,255,0.05), rgba(255,255,255,0.02)); border: 1px solid rgba(255,255,255,0.1); height: 20px; }
+    .pe-box .ep-seg { flex: none; height: 100%; border: none; border-radius: 0; cursor: pointer; opacity: 0.85; min-width: 1px; padding: 0; background: none; }
+    .pe-box .ep-seg:hover, .pe-box .ep-seg:focus-visible, .pe-box .ep-seg.active { opacity: 1; outline: none; }
+    .ep-table-wrap { margin-top: 10px; overflow-x: auto; }
+    .ep-table { width: 100%; border-collapse: collapse; font-size: 0.72em; }
+    .ep-table th, .ep-table td { text-align: left; padding: 4px 6px; border-bottom: 1px solid rgba(255,255,255,0.08); vertical-align: top; }
+    .ep-table th { color: var(--pe-text2); font-weight: 600; white-space: nowrap; }
+    .ep-table td { white-space: nowrap; }
+    .ep-table .frame-hex { white-space: normal; word-break: break-all; }
     .ep-row { transition: background-color 0.12s; }
     .ep-row.active { background: rgba(255,255,255,0.08); }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
   `;
   document.head.appendChild(style);
 }
@@ -250,7 +287,6 @@ export function handlePreviewResult(nonce: number, preview: EditorPresetPreview 
 
 function renderEditor(): void {
   if (!overlayEl || !editorData || !config) return;
-  const nameInput = `<input type="text" id="pe-name" value="${esc(editorData.name)}" placeholder="Preset name">`;
 
   const limitsHtml = config.permissions ? `
     <div class="pe-limits">
@@ -265,22 +301,30 @@ function renderEditor(): void {
     </div>` : "";
 
   overlayEl.innerHTML = `<div class="pe-box">
-    <h2 id="pe-title">${editorOriginalName ? "Edit Preset" : "New Preset"}</h2>
-    <div style="margin-bottom:0.75rem"><label><span>Name</span>${nameInput}</label></div>
+    <div class="pe-header">
+      <h2>${editorOriginalName ? "Edit Preset" : "New Preset"}</h2>
+      <div class="pe-header-actions">
+        <button id="pe-cancel">Cancel</button>
+        <button class="accent" id="pe-save">Save</button>
+      </div>
+    </div>
+    <div style="margin-bottom:0.75rem"><label><span>Name</span><input type="text" id="pe-name" value="${esc(editorData.name)}" placeholder="Preset name"></label></div>
     <div id="pe-tracks"></div>
-    <button id="pe-add-track" style="margin-top:0.5rem">+ Add Track</button>
+    <button id="pe-add-track" style="margin-top:8px">+ Add Track</button>
     ${limitsHtml}
     <details class="pe-preview" id="pe-preview-panel" ${config.onPreview ? "" : "hidden"}>
       <summary>Preview</summary>
       <div class="ep-status" id="ep-status">No preview yet.</div>
       <div class="ep-summary" id="ep-summary"></div>
       <div class="ep-timeline" id="ep-timeline"></div>
-      <div id="ep-events"></div>
+      <div class="ep-table-wrap" id="ep-events"></div>
+      <div class="pe-preview-legend" id="ep-legend">
+        <div class="pe-preview-legend-row"><strong>At</strong>: actual RF transmit start after single-transmitter serialization.</div>
+        <div class="pe-preview-legend-row"><strong>\uD83C\uDFAF Requested</strong>: ideal transmit start before any collision shifting.</div>
+        <div class="pe-preview-legend-row"><strong>Delay</strong>: serialization slip, equal to <span class="mono">At \u2212 Requested</span>.</div>
+        <div class="pe-preview-legend-row"><strong>\u23F1\uFE0F TX</strong>: on-air transmit duration of one RF message, derived from the encoder waveform.</div>
+      </div>
     </details>
-    <div class="pe-actions">
-      <button id="pe-cancel">Cancel</button>
-      <button class="accent" id="pe-save">Save</button>
-    </div>
   </div>`;
 
   const nameEl = overlayEl.querySelector("#pe-name") as HTMLInputElement;
@@ -346,9 +390,10 @@ function renderEditorTracks(): void {
 
     div.innerHTML = `
       <div class="pe-track-header" data-track-toggle="${ti}">
-        <span><span class="fold-arrow ${isOpen ? "open" : ""}">&#9654;</span>
+        <span>
+          <span class="fold-arrow ${isOpen ? "open" : ""}">&#9654;</span>
           Track: <select data-track-collar="${ti}" onclick="event.stopPropagation()">${collarOpts}</select>
-          <span style="color:#9da7b3;font-size:0.84rem">(${track.steps.length} steps)</span>
+          <span style="color:var(--pe-text2);font-size:0.85em">(${track.steps.length} steps)</span>
         </span>
         <button class="danger" data-track-remove="${ti}" style="padding:0.3rem 0.6rem">X</button>
       </div>
@@ -375,6 +420,7 @@ function renderEditorTracks(): void {
     const addBtn = document.createElement("button");
     addBtn.textContent = "+ Step";
     addBtn.style.marginTop = "0.4rem";
+    addBtn.style.fontSize = "0.85em";
     addBtn.addEventListener("click", () => {
       track.steps.push({ mode: "vibrate", intensity: 30, duration_ms: 1000 });
       renderEditorTracks();
@@ -393,27 +439,33 @@ function renderEditorStep(track: { steps: EditorPresetStep[]; collar_name: strin
   const maxDurMs = getMaxDuration(track.collar_name, step.mode);
   const durSec = (normalizeDuration(step.duration_ms) / 1000).toFixed(1);
   const maxDurSec = maxDurMs / 1000;
+  const intensity = Math.min(step.intensity, maxInt);
+  const durVal = Math.min(parseFloat(durSec), maxDurSec);
 
   const div = document.createElement("div");
   div.className = "pe-step";
-  div.draggable = true;
 
   div.innerHTML = `
-    <div class="pe-step-header">
-      <select data-step-mode>
-        ${(["shock", "vibrate", "beep", "pause"] as const).map((m) => `<option value="${m}" ${step.mode === m ? "selected" : ""}>${m[0]!.toUpperCase() + m.slice(1)}</option>`).join("")}
-      </select>
-      <button class="danger" data-step-remove style="padding:0.3rem 0.6rem">X</button>
-    </div>
-    ${noLevel ? "" : `<div class="pe-slider">
-      <span class="slider-label">Level</span>
-      <input type="range" min="0" max="${maxInt}" value="${Math.min(step.intensity, maxInt)}" data-step-intensity>
-      <span class="slider-val" data-intensity-val>${Math.min(step.intensity, maxInt)}</span>
-    </div>`}
-    <div class="pe-slider">
-      <span class="slider-label">Duration</span>
-      <input type="range" min="${DURATION_MIN_MS / 1000}" max="${maxDurSec}" step="${DURATION_STEP_MS / 1000}" value="${Math.min(parseFloat(durSec), maxDurSec)}" data-step-duration>
-      <span class="slider-val" data-duration-val>${formatEditorDuration(step.duration_ms)}</span>
+    <div style="flex:1">
+      <div class="pe-step-header">
+        <span class="pe-drag-handle" title="Drag to reorder">&#x2630;</span>
+        <select data-step-mode>
+          ${(["shock", "vibrate", "beep", "pause"] as const).map((m) => `<option value="${m}" ${step.mode === m ? "selected" : ""}>${describeMode(m)}</option>`).join("")}
+        </select>
+        <button class="danger" data-step-remove style="padding:0.3rem 0.6rem">X</button>
+      </div>
+      <div class="pe-step-controls">
+        ${noLevel ? "" : `<div class="pe-slider">
+          <span class="slider-label">Level</span>
+          <input type="range" min="0" max="${maxInt}" value="${intensity}" data-step-intensity>
+          <span class="slider-val" data-intensity-val>${intensity}</span>
+        </div>`}
+        <div class="pe-slider">
+          <span class="slider-label">Duration</span>
+          <input type="range" min="${DURATION_MIN_MS / 1000}" max="${maxDurSec}" step="${DURATION_STEP_MS / 1000}" value="${durVal}" data-step-duration>
+          <span class="slider-val" data-duration-val>${formatEditorDuration(step.duration_ms)}</span>
+        </div>
+      </div>
     </div>`;
 
   div.querySelector("[data-step-mode]")!.addEventListener("change", (e) => {
@@ -442,14 +494,17 @@ function renderEditorStep(track: { steps: EditorPresetStep[]; collar_name: strin
     schedulePreviewRefresh();
   });
 
-  // Drag-and-drop reordering within same track
+  // Drag-and-drop reordering within same track — only via handle
+  const handle = div.querySelector(".pe-drag-handle")!;
+  handle.addEventListener("mousedown", () => { div.draggable = true; });
+  handle.addEventListener("touchstart", () => { div.draggable = true; }, { passive: true });
   div.addEventListener("dragstart", (e) => {
     e.dataTransfer!.setData("text/plain", `step:${ti}:${si}`);
     div.style.opacity = "0.5";
     e.stopPropagation();
   });
-  div.addEventListener("dragend", () => { div.style.opacity = ""; });
-  div.addEventListener("dragover", (e) => { e.preventDefault(); div.style.borderTop = "2px solid #1f8bff"; e.stopPropagation(); });
+  div.addEventListener("dragend", () => { div.style.opacity = ""; div.draggable = false; });
+  div.addEventListener("dragover", (e) => { e.preventDefault(); div.style.borderTop = "2px solid var(--pe-accent)"; e.stopPropagation(); });
   div.addEventListener("dragleave", () => { div.style.borderTop = ""; });
   div.addEventListener("drop", (e) => {
     e.preventDefault(); e.stopPropagation();
@@ -511,8 +566,8 @@ function renderEditorPreview(): void {
   const preview = previewState.data;
   const endUs = Math.max(preview.total_duration_us, ...preview.events.map((e) => e.actual_time_us + e.transmit_duration_us));
   const delayed = preview.events.filter((e) => e.actual_time_us !== e.requested_time_us).length;
-  statusEl.textContent = "Preview reflects the exact serialized RF transmit order.";
-  summaryEl.textContent = `${preview.events.length} RF messages. Span ${fmtUs(preview.total_duration_us)}; timeline ${fmtUs(endUs)}. ${delayed} delayed.`;
+  statusEl.textContent = "Preview reflects the exact serialized RF transmit order and encoder-derived timing.";
+  summaryEl.textContent = `${preview.events.length} RF messages. Requested preset span ${fmtUs(preview.total_duration_us)}; serialized RF timeline ${fmtUs(endUs)}. ${delayed} delayed by single-transmitter serialization.`;
 
   // Timeline bar
   if (preview.events.length > 0) {
@@ -533,19 +588,27 @@ function renderEditorPreview(): void {
 
   // Event table
   eventsEl.innerHTML = `<table class="ep-table"><thead><tr>
-    <th>At</th><th title="Requested">&#x1F3AF;</th><th>Delay</th><th title="Track">&#x1F9F5;</th><th title="Step">&#x1F43E;</th>
-    <th title="TX">&#x23F1;</th><th>Collar</th><th title="Mode">&#x1F39B;</th><th title="Level">&#x1F4F6;</th><th>Frame</th>
+    <th>At</th>
+    <th title="Requested">&#x1F3AF;</th>
+    <th>Delay</th>
+    <th title="Track">&#x1F9F5;</th>
+    <th title="Step">&#x1F43E;</th>
+    <th title="RF TX Duration">&#x23F1;&#xFE0F;</th>
+    <th>Collar</th>
+    <th title="Mode">&#x1F39B;&#xFE0F;</th>
+    <th title="Level">&#x1F4F6;</th>
+    <th>Frame</th>
   </tr></thead><tbody>${preview.events.map((ev, i) => `<tr class="ep-row" data-pi="${i}" title="${esc(segTitle(ev))}">
-    <td style="font-family:monospace">${fmtUs(ev.actual_time_us)}</td>
-    <td style="font-family:monospace">${fmtUs(ev.requested_time_us)}</td>
-    <td style="font-family:monospace">${fmtUs(ev.actual_time_us - ev.requested_time_us)}</td>
+    <td class="mono">${fmtUs(ev.actual_time_us)}</td>
+    <td class="mono">${fmtUs(ev.requested_time_us)}</td>
+    <td class="mono">${fmtUs(ev.actual_time_us - ev.requested_time_us)}</td>
     <td style="color:${TRACK_COLORS[ev.track_index % TRACK_COLORS.length]}">${ev.track_index + 1}</td>
     <td>${ev.step_index + 1}</td>
-    <td style="font-family:monospace">${fmtUs(ev.transmit_duration_us)}</td>
+    <td class="mono">${fmtUs(ev.transmit_duration_us)}</td>
     <td>${esc(ev.collar_name)}</td>
-    <td>${MODE_EMOJI[ev.mode] ?? ev.mode}</td>
+    <td title="${esc(describeMode(ev.mode))}">${MODE_EMOJI[ev.mode] ?? esc(describeMode(ev.mode))}</td>
     <td>${ev.intensity}</td>
-    <td class="hex" style="font-family:monospace">${ev.raw_hex}</td>
+    <td class="mono frame-hex">${ev.raw_hex}</td>
   </tr>`).join("")}</tbody></table>`;
 
   // Cross-highlight timeline segments <-> table rows
@@ -557,9 +620,7 @@ function renderEditorPreview(): void {
     const pi = (el as HTMLElement).dataset.pi!;
     el.addEventListener("mouseenter", () => { for (const x of all) (x as HTMLElement).classList.toggle("active", (x as HTMLElement).dataset.pi === pi); });
     el.addEventListener("mouseleave", () => { for (const x of all) (x as HTMLElement).classList.remove("active"); });
+    el.addEventListener("focus", () => { for (const x of all) (x as HTMLElement).classList.toggle("active", (x as HTMLElement).dataset.pi === pi); });
+    el.addEventListener("blur", () => { for (const x of all) (x as HTMLElement).classList.remove("active"); });
   }
-}
-
-function fmtMs(ms: number): string {
-  return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`;
 }

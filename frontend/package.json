@@ -1,0 +1,17 @@
+{
+  "name": "rusty-collars-firmware-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^6.0.2",
+    "vite": "^6.3.2",
+    "vite-plugin-singlefile": "^2.0.3",
+    "vite-plugin-minify": "^2.0.1"
+  }
+}

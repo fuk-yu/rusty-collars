@@ -12,3 +12,7 @@ partitions.csv
 sdkconfig.defaults.partitions
 *.bin
 out.txt
+node_modules
+/frontend/dist
+/server/dist
+/central-control/dist
