@@ -37,6 +37,8 @@ let wsPingInterval: ReturnType<typeof setInterval> | null = null;
 let wsPingNonce = 0;
 let pendingPing: { nonce: number; startedAt: number } | null = null;
 let appReloadPending = false;
+let presetDragActive = false;
+let presetRenderDeferred = false;
 
 // === WebSocket ===
 
@@ -514,9 +516,35 @@ function setupTimedButton(btn: HTMLButtonElement) {
 }
 
 function renderPresets() {
+  if (presetDragActive) {
+    presetRenderDeferred = true;
+    return;
+  }
   const list = document.getElementById('preset-list')!;
   list.innerHTML = '';
   const rfLocked = isRfLocked();
+
+  // Drag state shared across all cards
+  let dragEnterCounters = new Map<HTMLElement, number>();
+  let currentDropTarget: HTMLElement | null = null;
+
+  function clearDropIndicator() {
+    if (currentDropTarget) {
+      currentDropTarget.style.borderTop = '';
+      currentDropTarget = null;
+    }
+  }
+
+  function getDropIndex(e: DragEvent): number {
+    // Find the card closest to the cursor, considering gaps between cards
+    const children = Array.from(list.children) as HTMLElement[];
+    for (let i = 0; i < children.length; i++) {
+      const rect = children[i]!.getBoundingClientRect();
+      if (e.clientY < rect.top + rect.height / 2) return i;
+    }
+    return children.length;
+  }
+
   for (let pi = 0; pi < state.presets.length; pi++) {
     const p = state.presets[pi];
     const isRunning = state.preset_running === p.name;
@@ -543,23 +571,71 @@ function renderPresets() {
       </h3>
       <div style="font-size:0.85em;color:var(--text2);margin-top:6px">${summary}</div>
     `;
-    // Drag-and-drop for preset reordering
+
     card.addEventListener('dragstart', e => {
+      presetDragActive = true;
       e.dataTransfer!.setData('text/plain', String(pi));
+      e.dataTransfer!.effectAllowed = 'move';
       card.style.opacity = '0.5';
     });
-    card.addEventListener('dragend', () => { card.style.opacity = ''; });
-    card.addEventListener('dragover', e => { e.preventDefault(); card.style.borderTop = '2px solid var(--accent)'; });
-    card.addEventListener('dragleave', () => { card.style.borderTop = ''; });
+    card.addEventListener('dragend', () => {
+      card.style.opacity = '';
+      clearDropIndicator();
+      presetDragActive = false;
+      if (presetRenderDeferred) {
+        presetRenderDeferred = false;
+        renderPresets();
+      }
+    });
+
+    // Use dragenter counter to handle child-element dragleave noise
+    card.addEventListener('dragenter', e => {
+      e.preventDefault();
+      const count = (dragEnterCounters.get(card) ?? 0) + 1;
+      dragEnterCounters.set(card, count);
+      if (count === 1) {
+        clearDropIndicator();
+        currentDropTarget = card;
+        card.style.borderTop = '2px solid var(--accent)';
+      }
+    });
+    card.addEventListener('dragover', e => { e.preventDefault(); });
+    card.addEventListener('dragleave', () => {
+      const count = (dragEnterCounters.get(card) ?? 1) - 1;
+      dragEnterCounters.set(card, count);
+      if (count <= 0) {
+        dragEnterCounters.delete(card);
+        if (currentDropTarget === card) {
+          card.style.borderTop = '';
+          currentDropTarget = null;
+        }
+      }
+    });
     card.addEventListener('drop', e => {
       e.preventDefault();
-      card.style.borderTop = '';
+      e.stopPropagation();
+      clearDropIndicator();
+      dragEnterCounters.clear();
       const from = parseInt(e.dataTransfer!.getData('text/plain'));
       const to = pi;
       if (from !== to) reorderPresets(from, to);
     });
     list.appendChild(card);
   }
+
+  // Handle drops in gaps between cards (on the container itself)
+  list.addEventListener('dragover', e => { e.preventDefault(); });
+  list.addEventListener('drop', e => {
+    e.preventDefault();
+    clearDropIndicator();
+    dragEnterCounters.clear();
+    const from = parseInt(e.dataTransfer!.getData('text/plain'));
+    if (isNaN(from)) return;
+    const to = getDropIndex(e);
+    // getDropIndex returns a positional index (0..N); reorderPresets handles the adjustment
+    if (from !== to) reorderPresets(from, to);
+  });
+
   list.querySelectorAll('[data-action="run-preset"]').forEach(btn => {
     btn.addEventListener('click', () => runPreset((btn as HTMLElement).dataset.name!));
   });
@@ -661,7 +737,9 @@ function duplicatePreset(name: string) {
 function reorderPresets(fromIndex: number, toIndex: number) {
   const presets = state.presets.slice();
   const [moved] = presets.splice(fromIndex, 1);
-  presets.splice(toIndex, 0, moved);
+  // After removing the source, indices shift: adjust for forward drags
+  const insertAt = toIndex > fromIndex ? toIndex - 1 : toIndex;
+  presets.splice(insertAt, 0, moved);
   send({ type: 'reorder_presets', names: presets.map((p: any) => p.name) });
 }
 
