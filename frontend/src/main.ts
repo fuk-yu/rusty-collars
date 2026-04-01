@@ -949,6 +949,16 @@ async function runStressTest() {
 
 function loadDeviceSettings() { send({ type: 'get_device_settings' }); }
 
+function updateWifiClientSettingsUi() {
+  const enabled = (document.getElementById('settings-wifi-client-enabled') as HTMLInputElement).checked;
+  const row = document.getElementById('settings-wifi-sta-fields-row')!;
+  const ssidInput = document.getElementById('settings-wifi-ssid') as HTMLInputElement;
+  const passwordInput = document.getElementById('settings-wifi-password') as HTMLInputElement;
+  row.classList.toggle('settings-disabled', !enabled);
+  ssidInput.disabled = !enabled;
+  passwordInput.disabled = !enabled;
+}
+
 function updateNtpSettingsUi() {
   const enabled = (document.getElementById('settings-ntp-enabled') as HTMLInputElement).checked;
   const row = document.getElementById('settings-ntp-server-row')!;
@@ -1013,6 +1023,7 @@ function saveDeviceSettings() {
       rx_led_pin: rxLed,
       rf_tx_pin: tx,
       rf_rx_pin: rx,
+      wifi_client_enabled: (document.getElementById('settings-wifi-client-enabled') as HTMLInputElement).checked,
       wifi_ssid: (document.getElementById('settings-wifi-ssid') as HTMLInputElement).value,
       wifi_password: (document.getElementById('settings-wifi-password') as HTMLInputElement).value,
       ap_enabled: (document.getElementById('settings-ap-enabled') as HTMLInputElement).checked,
@@ -1038,6 +1049,7 @@ function handleDeviceSettings(msg: any) {
   (document.getElementById('settings-rx-led-pin') as HTMLInputElement).value = s.rx_led_pin;
   (document.getElementById('settings-tx-pin') as HTMLInputElement).value = s.rf_tx_pin;
   (document.getElementById('settings-rx-pin') as HTMLInputElement).value = s.rf_rx_pin;
+  (document.getElementById('settings-wifi-client-enabled') as HTMLInputElement).checked = s.wifi_client_enabled !== false;
   (document.getElementById('settings-wifi-ssid') as HTMLInputElement).value = s.wifi_ssid || '';
   (document.getElementById('settings-wifi-password') as HTMLInputElement).value = s.wifi_password || '';
   (document.getElementById('settings-ap-enabled') as HTMLInputElement).checked = s.ap_enabled;
@@ -1049,6 +1061,7 @@ function handleDeviceSettings(msg: any) {
   (document.getElementById('settings-remote-control-url') as HTMLInputElement).value = s.remote_control_url || '';
   (document.getElementById('settings-remote-control-validate-cert') as HTMLInputElement).checked = s.remote_control_validate_cert !== false;
   (document.getElementById('settings-record-event-log') as HTMLInputElement).checked = !!s.record_event_log;
+  updateWifiClientSettingsUi();
   updateNtpSettingsUi();
   updateRemoteControlSettingsUi();
   const statusEl = document.getElementById('settings-status')!;
@@ -1375,6 +1388,7 @@ w.saveRemoteEditor = saveRemoteEditor;
 w.toggleRfDebug = toggleRfDebug;
 w.clearRfDebug = clearRfDebug;
 w.runStressTest = runStressTest;
+w.updateWifiClientSettingsUi = updateWifiClientSettingsUi;
 w.updateRemoteControlSettingsUi = updateRemoteControlSettingsUi;
 w.updateNtpSettingsUi = updateNtpSettingsUi;
 w.saveDeviceSettings = saveDeviceSettings;

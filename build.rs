@@ -49,18 +49,6 @@ fn main() {
         (1.0 - compressed.len() as f64 / html.len() as f64) * 100.0
     );
 
-    let config = std::fs::read_to_string("wifi.toml").expect(
-        "wifi.toml not found! Copy wifi.toml.example to wifi.toml and fill in credentials.",
-    );
-    let table: toml::Table = config.parse().expect("invalid wifi.toml");
-
-    let ssid = table["ssid"].as_str().expect("wifi.toml: missing 'ssid'");
-    let password = table["password"]
-        .as_str()
-        .expect("wifi.toml: missing 'password'");
-
-    println!("cargo:rustc-env=WIFI_SSID={ssid}");
-    println!("cargo:rustc-env=WIFI_PASSWORD={password}");
     println!(
         "cargo:rustc-env=RUSTY_COLLARS_APP_VERSION={}",
         app_version()
@@ -69,7 +57,6 @@ fn main() {
     println!("cargo:rerun-if-changed=Cargo.toml");
     println!("cargo:rerun-if-changed=src");
     println!("cargo:rerun-if-changed=frontend");
-    println!("cargo:rerun-if-changed=wifi.toml");
 }
 
 fn app_version() -> String {

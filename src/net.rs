@@ -4,7 +4,7 @@ use crate::protocol::DeviceSettings;
 use anyhow::Result;
 use esp_idf_svc::eventloop::EspSystemEventLoop;
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
-use log::info;
+use log::{info, warn};
 
 /// Returns true if running in QEMU (only used on ESP32 with OpenETH).
 #[allow(dead_code)]
@@ -19,7 +19,7 @@ pub fn is_qemu() -> bool {
 
 #[allow(dead_code)]
 pub enum NetworkHandle {
-    #[cfg(not(esp32p4))]
+    #[cfg(has_wifi)]
     Wifi(crate::wifi::WifiController),
     Eth,
     None,
@@ -27,7 +27,7 @@ pub enum NetworkHandle {
 
 impl NetworkHandle {
     pub fn poll(&mut self) {
-        #[cfg(not(esp32p4))]
+        #[cfg(has_wifi)]
         if let Self::Wifi(wifi) = self {
             wifi.poll();
         }
@@ -35,7 +35,7 @@ impl NetworkHandle {
 
     pub fn supports_time_sync(&self) -> bool {
         match self {
-            #[cfg(not(esp32p4))]
+            #[cfg(has_wifi)]
             Self::Wifi(_) => true,
             Self::Eth => true,
             Self::None => false,
@@ -57,27 +57,34 @@ pub fn connect(
         info!("QEMU detected - skipping WiFi PHY initialization");
         return connect_qemu_eth(mac, sys_loop);
     }
-    let wifi = crate::wifi::connect(modem, sys_loop, nvs, settings)?;
+    // ESP32 is a wifi-capable board; force AP if no other reachability
+    let sta_will = crate::wifi::sta_will_connect(settings);
+    let force_ap = !sta_will && !settings.ap_enabled;
+    if force_ap {
+        warn!("WiFi board: forcing AP (WiFi client disabled/unconfigured and AP is off)");
+    }
+    let wifi = crate::wifi::connect(modem, sys_loop, nvs, settings, force_ap)?;
     Ok(NetworkHandle::Wifi(wifi))
 }
 
 // --- ESP32-P4: Ethernet via raw ESP-IDF ---
 
+/// Start P4 Ethernet (raw ESP-IDF). Returns the netif handle.
+/// Does NOT wait for DHCP — the caller decides whether to block.
 #[cfg(esp32p4)]
-unsafe fn init_p4_ethernet() {
+unsafe fn start_p4_ethernet() -> *mut esp_idf_svc::sys::esp_netif_t {
     use esp_idf_svc::sys::*;
 
     // Initialize TCP/IP stack and default event loop (required before esp_netif/eth)
-    let err = esp_idf_svc::sys::esp_netif_init();
-    assert_eq!(
-        err,
-        esp_idf_svc::sys::ESP_OK,
+    let err = esp_netif_init();
+    assert!(
+        err == ESP_OK || err == ESP_ERR_INVALID_STATE,
         "esp_netif_init failed: {err}"
     );
-    let err = esp_idf_svc::sys::esp_event_loop_create_default();
+    let err = esp_event_loop_create_default();
     // ESP_ERR_INVALID_STATE means it's already created (e.g. by EspSystemEventLoop::take)
     assert!(
-        err == esp_idf_svc::sys::ESP_OK || err == esp_idf_svc::sys::ESP_ERR_INVALID_STATE,
+        err == ESP_OK || err == ESP_ERR_INVALID_STATE,
         "esp_event_loop_create_default failed: {err}"
     );
 
@@ -154,8 +161,21 @@ unsafe fn init_p4_ethernet() {
 
     info!("Ethernet started, waiting for IP via DHCP...");
 
-    // Poll until DHCP assigns an IP (up to 30s)
+    netif
+}
+
+/// Wait for an IP address on the given netif via DHCP.
+/// Returns true if IP was obtained within the timeout.
+#[cfg(esp32p4)]
+#[allow(dead_code)]
+unsafe fn wait_netif_ip(
+    netif: *mut esp_idf_svc::sys::esp_netif_t,
+    timeout: std::time::Duration,
+) -> bool {
+    use esp_idf_svc::sys::*;
+
     let start = esp_timer_get_time();
+    let timeout_us = timeout.as_micros() as i64;
     loop {
         let mut ip_info: esp_netif_ip_info_t = core::mem::zeroed();
         if esp_netif_get_ip_info(netif, &mut ip_info) == ESP_OK && ip_info.ip.addr != 0 {
@@ -167,12 +187,23 @@ unsafe fn init_p4_ethernet() {
                 (ip >> 16) & 0xFF,
                 (ip >> 24) & 0xFF
             );
-            break;
+            return true;
         }
-        let elapsed_us = esp_timer_get_time() - start;
-        assert!(elapsed_us < 30_000_000, "Ethernet DHCP timeout (30s)");
+        let elapsed = esp_timer_get_time() - start;
+        if elapsed > timeout_us {
+            return false;
+        }
         std::thread::sleep(std::time::Duration::from_millis(250));
     }
+}
+
+/// Check if a netif currently has an IP address.
+#[cfg(esp32p4)]
+#[allow(dead_code)]
+unsafe fn check_netif_ip(netif: *mut esp_idf_svc::sys::esp_netif_t) -> bool {
+    use esp_idf_svc::sys::*;
+    let mut ip_info: esp_netif_ip_info_t = core::mem::zeroed();
+    esp_netif_get_ip_info(netif, &mut ip_info) == ESP_OK && ip_info.ip.addr != 0
 }
 
 // --- ESP32-P4-ETH: Ethernet only (no WiFi, no modem peripheral) ---
@@ -184,33 +215,58 @@ pub fn connect(
     _settings: &DeviceSettings,
 ) -> Result<NetworkHandle> {
     info!("ESP32-P4: starting Ethernet...");
-    unsafe { init_p4_ethernet() };
+    let netif = unsafe { start_p4_ethernet() };
+    let got_ip = unsafe { wait_netif_ip(netif, std::time::Duration::from_secs(30)) };
+    assert!(got_ip, "Ethernet DHCP timeout (30s)");
     Ok(NetworkHandle::Eth)
 }
 
-// --- ESP32-P4-WiFi: Ethernet + WiFi via companion ESP32-C6 (esp_wifi_remote) ---
+// --- ESP32-P4-WiFi: Ethernet + WiFi via companion ESP32-C6 (esp_hosted over SDIO) ---
 // The P4 chip has no built-in radio; WiFi is provided by a companion ESP32-C6
-// connected over SPI, using the esp_wifi_remote component. The standard esp-idf-svc
-// WiFi types (EspWifi, Modem) are not available on P4 — WiFi remote init will use
-// raw ESP-IDF calls once hardware is available for testing.
+// connected over SDIO, using the esp_hosted + esp_wifi_remote components.
+// With esp_wifi_remote enabled, the standard esp-idf-svc WiFi types (EspWifi, Modem)
+// are available.
 
 #[cfg(all(esp32p4, has_wifi))]
 pub fn connect(
-    _sys_loop: EspSystemEventLoop,
-    _nvs: EspDefaultNvsPartition,
-    _settings: &DeviceSettings,
+    modem: esp_idf_svc::hal::modem::Modem<'static>,
+    sys_loop: EspSystemEventLoop,
+    nvs: EspDefaultNvsPartition,
+    settings: &DeviceSettings,
 ) -> Result<NetworkHandle> {
     info!("ESP32-P4-WiFi: starting Ethernet...");
-    unsafe { init_p4_ethernet() };
+    let eth_netif = unsafe { start_p4_ethernet() };
 
-    // TODO: Initialize WiFi via esp_wifi_remote (companion ESP32-C6 over SPI).
-    // This requires:
-    // 1. The companion C6 running esp_wifi_remote slave firmware
-    // 2. Correct SPI pin configuration in sdkconfig.defaults.esp32p4-wifi
-    // 3. Raw esp_wifi_* API calls (P4 HAL does not provide a Modem peripheral)
-    info!("ESP32-P4-WiFi: WiFi remote support not yet implemented, running Ethernet only");
+    info!("ESP32-P4-WiFi: starting WiFi...");
+    let sta_will = crate::wifi::sta_will_connect(settings);
+    // If STA won't connect and AP is off, force AP preemptively
+    // (ethernet might also fail, and we need at least one way to reach the board)
+    let force_ap_preemptive = !sta_will && !settings.ap_enabled;
+    if force_ap_preemptive {
+        warn!("Forcing AP preemptively (WiFi client disabled/unconfigured, AP off, ethernet uncertain)");
+    }
 
-    Ok(NetworkHandle::Eth)
+    let mut wifi = crate::wifi::connect(modem, sys_loop, nvs, settings, force_ap_preemptive)?;
+
+    // By now wifi::connect() has done its initial STA attempt (blocking, ~15s timeout).
+    // Ethernet has also been running in the background during that time.
+    let eth_has_ip = unsafe { check_netif_ip(eth_netif) };
+    let wifi_has_ip = wifi.sta_has_ip();
+    let ap_running = settings.ap_enabled || force_ap_preemptive;
+
+    if eth_has_ip {
+        info!("ESP32-P4-WiFi: Ethernet connected");
+    } else {
+        info!("ESP32-P4-WiFi: Ethernet not connected yet, will auto-connect when cable is plugged in");
+    }
+
+    // If both ethernet and wifi STA failed initially AND AP is not running, force AP
+    if !eth_has_ip && !wifi_has_ip && !ap_running {
+        warn!("No initial connectivity (Ethernet + WiFi STA both failed) - forcing AP");
+        wifi.force_enable_ap(settings)?;
+    }
+
+    Ok(NetworkHandle::Wifi(wifi))
 }
 
 // --- ESP32-C6 and others: WiFi only ---
@@ -226,7 +282,13 @@ pub fn connect(
         info!("QEMU detected - no Ethernet MAC on this chip, running without network");
         return Ok(NetworkHandle::None);
     }
-    let wifi = crate::wifi::connect(modem, sys_loop, nvs, settings)?;
+    // WiFi-only board: force AP if no other way to reach the device
+    let sta_will = crate::wifi::sta_will_connect(settings);
+    let force_ap = !sta_will && !settings.ap_enabled;
+    if force_ap {
+        warn!("WiFi-only board: forcing AP (WiFi client disabled/unconfigured and AP is off)");
+    }
+    let wifi = crate::wifi::connect(modem, sys_loop, nvs, settings, force_ap)?;
     Ok(NetworkHandle::Wifi(wifi))
 }
 

@@ -4,7 +4,6 @@
 .cargo-home
 .rustup
 .toolchain-bin
-wifi.toml
 export-esp.sh
 .direnv
 espflash.toml

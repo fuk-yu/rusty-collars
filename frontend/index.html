@@ -90,6 +90,9 @@
   <div class="card" id="card-wifi-sta">
     <h3>WiFi Client (STA)</h3>
     <div class="form-row" style="margin-top:8px">
+      <label style="min-width:auto"><input type="checkbox" id="settings-wifi-client-enabled" onchange="updateWifiClientSettingsUi()"> Enable WiFi Client</label>
+    </div>
+    <div class="form-row" id="settings-wifi-sta-fields-row">
       <label>SSID</label>
       <input type="text" id="settings-wifi-ssid" placeholder="(use build default)">
       <label>Password</label>

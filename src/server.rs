@@ -431,6 +431,7 @@ fn device_settings_reboot_required(previous: &DeviceSettings, next: &DeviceSetti
         || previous.rx_led_pin != next.rx_led_pin
         || previous.rf_tx_pin != next.rf_tx_pin
         || previous.rf_rx_pin != next.rf_rx_pin
+        || previous.wifi_client_enabled != next.wifi_client_enabled
         || previous.wifi_ssid != next.wifi_ssid
         || previous.wifi_password != next.wifi_password
         || previous.ap_enabled != next.ap_enabled

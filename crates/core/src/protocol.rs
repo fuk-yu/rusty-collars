@@ -18,6 +18,8 @@ pub struct DeviceSettings {
     pub rf_tx_pin: u8,
     pub rf_rx_pin: u8,
     // WiFi STA (client)
+    #[serde(default = "default_true")]
+    pub wifi_client_enabled: bool,
     #[serde(default)]
     pub wifi_ssid: String,
     #[serde(default)]
@@ -72,8 +74,8 @@ impl DeviceSettings {
         } // C6: single LED on 8 for both
         #[cfg(esp32p4)]
         {
-            (14, 17, 15, 18)
-        } // P4-ETH: TX LED=GPIO17, RX LED=GPIO18, RF TX=GPIO6, RF RX=GPIO5
+            (7, 8, 5, 6)
+        } // P4: avoid GPIO14-19 (used by SDIO on P4-WiFi boards)
         #[cfg(not(any(esp32c6, esp32p4)))]
         {
             (2, 2, 16, 15)
@@ -90,6 +92,7 @@ impl Default for DeviceSettings {
             rx_led_pin,
             rf_tx_pin,
             rf_rx_pin,
+            wifi_client_enabled: true,
             wifi_ssid: String::new(),
             wifi_password: String::new(),
             ap_enabled: true,
@@ -630,6 +633,8 @@ mod tests {
                         duration_ms: 500,
                         intensity_max: Some(60),
                         duration_max_ms: None,
+                        intensity_distribution: None,
+                        duration_distribution: None,
                     },
                     PresetStep {
                         mode: PresetStepMode::Beep,
@@ -637,6 +642,8 @@ mod tests {
                         duration_ms: 200,
                         intensity_max: Some(99),
                         duration_max_ms: None,
+                        intensity_distribution: None,
+                        duration_distribution: None,
                     },
                     PresetStep {
                         mode: PresetStepMode::Pause,
@@ -644,6 +651,8 @@ mod tests {
                         duration_ms: 300,
                         intensity_max: Some(50),
                         duration_max_ms: None,
+                        intensity_distribution: None,
+                        duration_distribution: None,
                     },
                 ],
             }],
@@ -667,6 +676,8 @@ mod tests {
             duration_ms: 2000,
             intensity_max: None,
             duration_max_ms: None,
+            intensity_distribution: None,
+            duration_distribution: None,
         };
         assert_eq!(step.midpoint_intensity(), 50);
         assert_eq!(step.midpoint_duration(), 2000);
@@ -680,6 +691,8 @@ mod tests {
             duration_ms: 1000,
             intensity_max: Some(80),
             duration_max_ms: Some(5000),
+            intensity_distribution: None,
+            duration_distribution: None,
         };
         assert_eq!(step.midpoint_intensity(), 50);
         assert_eq!(step.midpoint_duration(), 3000);
@@ -876,6 +889,8 @@ mod tests {
                         duration_ms: 1500,
                         intensity_max: None,
                         duration_max_ms: None,
+                        intensity_distribution: None,
+                        duration_distribution: None,
                     }],
                 }],
             }],

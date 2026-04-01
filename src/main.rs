@@ -19,7 +19,7 @@ mod rf;
 mod server;
 mod storage;
 mod time_sync;
-#[cfg(not(esp32p4))]
+#[cfg(has_wifi)]
 mod wifi;
 
 pub use rusty_collars_core::{protocol, scheduling, validation};
@@ -62,6 +62,32 @@ fn main() -> Result<()> {
     let mut device_settings = temp_storage.load_settings()?;
     temp_storage.ensure_device_id(&mut device_settings)?;
     drop(temp_storage);
+
+    // P4-WiFi: GPIO14-19 are reserved for SDIO (P4↔C6 bus).
+    // The core crate doesn't have platform cfgs, so its defaults may conflict.
+    // Override any conflicting pins to safe values.
+    #[cfg(all(esp32p4, has_wifi))]
+    {
+        const SDIO_GPIOS: [u8; 6] = [14, 15, 16, 17, 18, 19];
+        let safe: [u8; 4] = [7, 8, 5, 6]; // tx_led, rx_led, rf_tx, rf_rx
+        let pins = [
+            &mut device_settings.tx_led_pin,
+            &mut device_settings.rx_led_pin,
+            &mut device_settings.rf_tx_pin,
+            &mut device_settings.rf_rx_pin,
+        ];
+        for (i, pin) in pins.into_iter().enumerate() {
+            if SDIO_GPIOS.contains(pin) {
+                log::warn!(
+                    "GPIO{} conflicts with SDIO bus, overriding to GPIO{}",
+                    *pin,
+                    safe[i]
+                );
+                *pin = safe[i];
+            }
+        }
+    }
+
     info!(
         "GPIO settings: TX LED={}, RX LED={}, RF TX={}, RF RX={}",
         device_settings.tx_led_pin,
@@ -91,7 +117,14 @@ fn main() -> Result<()> {
         nvs_partition.clone(),
         &device_settings,
     )?;
-    #[cfg(esp32p4)]
+    #[cfg(all(esp32p4, has_wifi))]
+    let mut network = net::connect(
+        _peripherals.modem,
+        sys_loop.clone(),
+        nvs_partition.clone(),
+        &device_settings,
+    )?;
+    #[cfg(all(esp32p4, not(has_wifi)))]
     let mut network = net::connect(sys_loop.clone(), nvs_partition.clone(), &device_settings)?;
     #[cfg(not(any(esp32, esp32p4)))]
     let mut network = net::connect(
