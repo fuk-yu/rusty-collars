@@ -281,6 +281,9 @@ function connect() {
       case 'preset_preview':
         handlePreviewResult(msg.nonce, msg.preview ?? null, msg.error ?? null);
         break;
+      case 'network_status':
+        renderNetworkStatus(msg);
+        break;
       case 'error':
         alert(msg.message);
         break;
@@ -1102,6 +1105,68 @@ function doImport(e: Event) {
   input.value = '';
 }
 
+// === Network Status ===
+
+function refreshNetworkStatus() {
+  send({ type: 'get_network_status' });
+}
+
+function renderNetworkStatus(msg: any) {
+  const el = document.getElementById('network-status-content')!;
+  const lines: string[] = [];
+
+  lines.push(`Board MAC: ${msg.board_mac}`);
+  lines.push('');
+
+  // Ethernet
+  const eth = msg.ethernet;
+  if (eth.available) {
+    const status = eth.connected ? `connected, IP: ${eth.ip}` : 'no IP (disconnected)';
+    lines.push(`Ethernet:  ${status}`);
+    lines.push(`  MAC: ${eth.mac}`);
+  } else {
+    lines.push('Ethernet:  not available');
+  }
+  lines.push('');
+
+  // WiFi STA
+  const sta = msg.wifi_sta;
+  if (!sta.available) {
+    lines.push('WiFi STA:  not available');
+  } else if (!sta.enabled) {
+    lines.push('WiFi STA:  disabled');
+  } else if (sta.connected) {
+    lines.push(`WiFi STA:  connected, IP: ${sta.ip}`);
+    lines.push(`  MAC: ${sta.mac}`);
+  } else {
+    lines.push('WiFi STA:  enabled, connecting...');
+    lines.push(`  MAC: ${sta.mac}`);
+  }
+  lines.push('');
+
+  // WiFi AP
+  const ap = msg.wifi_ap;
+  if (!ap.available) {
+    lines.push('WiFi AP:   not available');
+  } else if (!ap.enabled) {
+    lines.push('WiFi AP:   disabled');
+  } else {
+    lines.push(`WiFi AP:   running, IP: ${ap.ip}`);
+    lines.push(`  MAC: ${ap.mac}`);
+    if (ap.clients.length === 0) {
+      lines.push('  Clients: none');
+    } else {
+      lines.push(`  Clients: ${ap.clients.length}`);
+      for (const c of ap.clients) {
+        const ip = c.ip ? ` IP: ${c.ip}` : '';
+        lines.push(`    ${c.mac}${ip}`);
+      }
+    }
+  }
+
+  el.textContent = lines.join('\n');
+}
+
 // === RF Debug ===
 
 function toggleRfDebug() {
@@ -1385,6 +1450,7 @@ w.openPresetEditor = openPresetEditor;
 w.openRemoteEditor = openRemoteEditor;
 w.closeRemoteEditor = closeRemoteEditor;
 w.saveRemoteEditor = saveRemoteEditor;
+w.refreshNetworkStatus = refreshNetworkStatus;
 w.toggleRfDebug = toggleRfDebug;
 w.clearRfDebug = clearRfDebug;
 w.runStressTest = runStressTest;

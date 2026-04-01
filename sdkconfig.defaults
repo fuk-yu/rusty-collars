@@ -1,3 +1,15 @@
+# ESP32-P4-WiFi: Ethernet + WiFi via companion ESP32-C6 (esp_hosted over SDIO)
+# Tested on: Waveshare ESP32-P4-WIFI6-POE-ETH
+# The companion C6 must be running the esp_hosted slave firmware.
+#
+# SDIO pinout (same as Espressif P4-Function-EV-Board):
+#   CLK=GPIO18, CMD=GPIO19, D0=GPIO14, D1=GPIO15, D2=GPIO16, D3=GPIO17
+#   Slave reset=GPIO54
+#
+# WARNING: GPIO14-19 are used by SDIO — do not assign LEDs or RF pins to these!
+
+# --- Base P4 config (same as sdkconfig.defaults.esp32p4) ---
+
 # Hostname for DHCP
 CONFIG_LWIP_LOCAL_HOSTNAME="collars"
 
@@ -29,5 +41,32 @@ CONFIG_ETH_USE_ESP32_EMAC=y
 # Flash size (P4-Function-EV has 32MB, but 16MB is max supported by bootloader)
 CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 
+# PSRAM (required by esp_hosted for shared buffers)
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_SPEED_200M=y
+
+# Cache (recommended with PSRAM)
+CONFIG_CACHE_L2_CACHE_256KB=y
+CONFIG_CACHE_L2_CACHE_LINE_128B=y
+
 # NVS
 CONFIG_NVS_ENCRYPTION=n
+
+# --- WiFi via esp_hosted (companion ESP32-C6 on SDIO) ---
+
+CONFIG_ESP_WIFI_REMOTE_ENABLED=y
+CONFIG_ESP_WIFI_REMOTE_LIBRARY_HOSTED=y
+
+# Companion chip target
+CONFIG_SLAVE_IDF_TARGET_ESP32C6=y
+
+# Board layout — Waveshare P4-WIFI6-POE-ETH uses same SDIO pinout as Espressif P4-Function-EV
+CONFIG_ESP_HOSTED_P4_DEV_BOARD_FUNC_BOARD=y
+
+# LWIP tuning for WiFi throughput
+CONFIG_LWIP_TCP_SND_BUF_DEFAULT=65534
+CONFIG_LWIP_TCP_WND_DEFAULT=65534
+CONFIG_LWIP_TCP_RECVMBOX_SIZE=64
+CONFIG_LWIP_UDP_RECVMBOX_SIZE=64
+CONFIG_LWIP_TCPIP_RECVMBOX_SIZE=64
+CONFIG_LWIP_TCP_SACK_OUT=y

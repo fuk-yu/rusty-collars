@@ -350,6 +350,7 @@ pub enum ClientMessage {
     Import {
         data: ExportData,
     },
+    GetNetworkStatus,
 }
 
 #[derive(Debug, Serialize)]
@@ -401,9 +402,39 @@ pub enum ServerMessage<'a> {
     EventLogEvent {
         event: &'a EventLogEntry,
     },
+    NetworkStatus {
+        board_mac: String,
+        ethernet: InterfaceStatus,
+        wifi_sta: InterfaceStatus,
+        wifi_ap: ApStatus,
+    },
     Error {
         message: String,
     },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InterfaceStatus {
+    pub available: bool,
+    pub enabled: bool,
+    pub mac: String,
+    pub ip: String,
+    pub connected: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApStatus {
+    pub available: bool,
+    pub enabled: bool,
+    pub mac: String,
+    pub ip: String,
+    pub clients: Vec<ApClientInfo>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApClientInfo {
+    pub mac: String,
+    pub ip: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

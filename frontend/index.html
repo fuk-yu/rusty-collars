@@ -51,6 +51,13 @@
 
 <div class="tab-content" id="tab-debug">
   <div class="card">
+    <h3>Board &amp; Network Status</h3>
+    <div id="network-status" style="font-size:0.9em;margin-top:8px">
+      <button class="btn-run" onclick="refreshNetworkStatus()">Refresh</button>
+      <div id="network-status-content" style="margin-top:8px;font-family:monospace;white-space:pre-wrap;color:var(--text2)">Click Refresh to load</div>
+    </div>
+  </div>
+  <div class="card">
     <div class="debug-toolbar">
       <h3 style="margin:0">Event Log</h3>
       <span id="event-log-status" style="font-size:0.85em;color:var(--text2)">Recording off</span>

@@ -16,9 +16,9 @@ use crate::async_runtime::{AsyncIoSocket, AsyncIoTimer};
 use crate::build_info::APP_VERSION;
 use crate::led::Led;
 use crate::protocol::{
-    ClientMessage, Collar, CommandMode, DeviceSettings, Distribution, EventLogEntry,
-    EventLogEntryKind, EventSource, ExportData, Preset, RemoteControlStatus, RfDebugFrame,
-    ServerMessage, MAX_INTENSITY,
+    ApClientInfo, ApStatus, ClientMessage, Collar, CommandMode, DeviceSettings, Distribution,
+    EventLogEntry, EventLogEntryKind, EventSource, ExportData, InterfaceStatus, Preset,
+    RemoteControlStatus, RfDebugFrame, ServerMessage, MAX_INTENSITY,
 };
 use crate::rf::{RfReceiver, RfTransmitter};
 use crate::scheduling::{self, PresetEvent, StepResolver};
@@ -537,6 +537,163 @@ fn save_settings(ctx: &AppCtx, settings: &DeviceSettings) -> Result<()> {
 fn log_storage_result(operation: &str, result: Result<()>) {
     if let Err(err) = result {
         error!("NVS {operation} failed: {err:#}");
+    }
+}
+
+// --- Network status ---
+
+fn format_mac(mac: &[u8; 6]) -> String {
+    format!(
+        "{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
+        mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
+    )
+}
+
+fn gather_network_status(settings: &DeviceSettings) -> ServerMessage<'static> {
+    use esp_idf_svc::sys::*;
+
+    // Board base MAC (unique chip identifier)
+    let board_mac = {
+        let mut mac = [0u8; 6];
+        unsafe { esp_efuse_mac_get_default(mac.as_mut_ptr()) };
+        format_mac(&mac)
+    };
+
+    // Helper: get IP string from a netif, or empty string
+    let get_netif_ip = |key: &[u8]| -> String {
+        unsafe {
+            let netif = esp_netif_get_handle_from_ifkey(key.as_ptr() as *const _);
+            if netif.is_null() {
+                return String::new();
+            }
+            let mut ip_info: esp_netif_ip_info_t = core::mem::zeroed();
+            if esp_netif_get_ip_info(netif, &mut ip_info) == ESP_OK && ip_info.ip.addr != 0 {
+                let ip = ip_info.ip.addr;
+                format!(
+                    "{}.{}.{}.{}",
+                    ip & 0xFF,
+                    (ip >> 8) & 0xFF,
+                    (ip >> 16) & 0xFF,
+                    (ip >> 24) & 0xFF
+                )
+            } else {
+                String::new()
+            }
+        }
+    };
+
+    // Helper: get MAC from a netif
+    let get_netif_mac = |key: &[u8]| -> String {
+        unsafe {
+            let netif = esp_netif_get_handle_from_ifkey(key.as_ptr() as *const _);
+            if netif.is_null() {
+                return String::new();
+            }
+            let mut mac = [0u8; 6];
+            if esp_netif_get_mac(netif, mac.as_mut_ptr()) == ESP_OK {
+                format_mac(&mac)
+            } else {
+                String::new()
+            }
+        }
+    };
+
+    // Ethernet
+    let ethernet = {
+        let mac = get_netif_mac(b"ETH_DEF\0");
+        let ip = get_netif_ip(b"ETH_DEF\0");
+        let available = !mac.is_empty();
+        let connected = !ip.is_empty();
+        InterfaceStatus {
+            available,
+            enabled: available, // ethernet is always enabled when available
+            mac,
+            ip,
+            connected,
+        }
+    };
+
+    // WiFi STA
+    let wifi_sta = if HAS_WIFI {
+        let mac = get_netif_mac(b"WIFI_STA_DEF\0");
+        let ip = get_netif_ip(b"WIFI_STA_DEF\0");
+        let available = !mac.is_empty();
+        let connected = !ip.is_empty();
+        let enabled = settings.wifi_client_enabled && !settings.wifi_ssid.is_empty();
+        InterfaceStatus {
+            available,
+            enabled,
+            mac,
+            ip,
+            connected,
+        }
+    } else {
+        InterfaceStatus {
+            available: false,
+            enabled: false,
+            mac: String::new(),
+            ip: String::new(),
+            connected: false,
+        }
+    };
+
+    // WiFi AP
+    let wifi_ap = if HAS_WIFI {
+        let mac = get_netif_mac(b"WIFI_AP_DEF\0");
+        let ip = get_netif_ip(b"WIFI_AP_DEF\0");
+        let available = !mac.is_empty();
+        let enabled = settings.ap_enabled;
+
+        // Get connected clients
+        let clients = if available {
+            gather_ap_clients()
+        } else {
+            Vec::new()
+        };
+
+        ApStatus {
+            available,
+            enabled,
+            mac,
+            ip,
+            clients,
+        }
+    } else {
+        ApStatus {
+            available: false,
+            enabled: false,
+            mac: String::new(),
+            ip: String::new(),
+            clients: Vec::new(),
+        }
+    };
+
+    ServerMessage::NetworkStatus {
+        board_mac,
+        ethernet,
+        wifi_sta,
+        wifi_ap,
+    }
+}
+
+fn gather_ap_clients() -> Vec<ApClientInfo> {
+    use esp_idf_svc::sys::*;
+
+    unsafe {
+        let mut sta_list: wifi_sta_list_t = core::mem::zeroed();
+        if esp_wifi_ap_get_sta_list(&mut sta_list) != ESP_OK {
+            return Vec::new();
+        }
+
+        (0..sta_list.num as usize)
+            .map(|i| {
+                let sta = &sta_list.sta[i];
+                ApClientInfo {
+                    mac: format_mac(&sta.mac),
+                    ip: String::new(),
+                }
+            })
+            .collect()
     }
 }
 
@@ -1444,6 +1601,16 @@ pub(crate) fn process_control_message(
                 },
             )
             .unwrap()])
+        }
+
+        ClientMessage::GetNetworkStatus => {
+            if origin == MessageOrigin::RemoteControl {
+                return Err("get_network_status is not available over remote control".to_string());
+            }
+
+            let settings = ctx.domain.lock().unwrap().device_settings.clone();
+            let status = gather_network_status(&settings);
+            Ok(vec![serde_json::to_string(&status).unwrap()])
         }
 
         ClientMessage::SaveDeviceSettings { mut settings } => {
