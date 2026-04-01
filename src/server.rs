@@ -17,8 +17,8 @@ use crate::build_info::APP_VERSION;
 use crate::led::Led;
 use crate::protocol::{
     ApClientInfo, ApStatus, ClientMessage, Collar, CommandMode, DeviceSettings, Distribution,
-    EventLogEntry, EventLogEntryKind, EventSource, ExportData, InterfaceStatus, Preset,
-    RemoteControlStatus, RfDebugFrame, ServerMessage, MAX_INTENSITY,
+    EventLogEntry, EventLogEntryKind, EventSource, ExportData, InterfaceStatus, MemoryRegion,
+    Preset, RemoteControlStatus, RfDebugFrame, ServerMessage, MAX_INTENSITY,
 };
 use crate::rf::{RfReceiver, RfTransmitter};
 use crate::scheduling::{self, PresetEvent, StepResolver};
@@ -381,6 +381,27 @@ fn free_heap() -> u32 {
     unsafe { esp_idf_svc::sys::esp_get_free_heap_size() }
 }
 
+fn free_internal_heap() -> u32 {
+    unsafe { esp_idf_svc::sys::esp_get_free_internal_heap_size() }
+}
+
+/// Memory region info: (total, free) in bytes.
+#[derive(Debug, Clone, Copy)]
+struct MemRegion {
+    total: u32,
+    free: u32,
+}
+
+fn mem_region(cap: u32) -> MemRegion {
+    use esp_idf_svc::sys::*;
+    unsafe {
+        MemRegion {
+            total: heap_caps_get_total_size(cap) as u32,
+            free: heap_caps_get_free_size(cap) as u32,
+        }
+    }
+}
+
 fn command_intensity(mode: CommandMode, intensity: u8) -> u8 {
     if mode.has_intensity() {
         intensity
@@ -668,8 +689,34 @@ fn gather_network_status(settings: &DeviceSettings) -> ServerMessage<'static> {
         }
     };
 
+    let min_free = unsafe { esp_idf_svc::sys::esp_get_minimum_free_heap_size() };
+
+    // Enumerate all memory regions
+    use esp_idf_svc::sys::*;
+    let regions: &[(&str, u32)] = &[
+        ("Internal", MALLOC_CAP_INTERNAL),
+        ("PSRAM", MALLOC_CAP_SPIRAM),
+        ("DMA", MALLOC_CAP_DMA),
+        ("RTCRAM", MALLOC_CAP_RTCRAM),
+        ("TCM", MALLOC_CAP_TCM),
+    ];
+    let memory: Vec<MemoryRegion> = regions
+        .iter()
+        .map(|(name, cap)| {
+            let r = mem_region(*cap);
+            MemoryRegion {
+                name: name.to_string(),
+                total_bytes: r.total,
+                free_bytes: r.free,
+            }
+        })
+        .filter(|r| r.total_bytes > 0)
+        .collect();
+
     ServerMessage::NetworkStatus {
         board_mac,
+        memory,
+        min_free_heap_bytes: min_free,
         ethernet,
         wifi_sta,
         wifi_ap,

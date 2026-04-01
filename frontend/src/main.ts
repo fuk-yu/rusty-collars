@@ -1115,7 +1115,17 @@ function renderNetworkStatus(msg: any) {
   const el = document.getElementById('network-status-content')!;
   const lines: string[] = [];
 
-  lines.push(`Board MAC: ${msg.board_mac}`);
+  lines.push(`Board MAC:  ${msg.board_mac}`);
+  lines.push('');
+
+  const fmt = (b: number) => b >= 1024 * 1024 ? (b / (1024 * 1024)).toFixed(1) + ' MB' : (b / 1024).toFixed(1) + ' KB';
+  const pad = (s: string, n: number) => s.padStart(n);
+  lines.push('Memory:     ' + pad('Total', 10) + pad('Free', 10) + pad('Used', 10));
+  for (const r of msg.memory) {
+    const used = r.total_bytes - r.free_bytes;
+    lines.push('  ' + r.name.padEnd(10) + pad(fmt(r.total_bytes), 10) + pad(fmt(r.free_bytes), 10) + pad(fmt(used), 10));
+  }
+  lines.push(`  Min free heap: ${fmt(msg.min_free_heap_bytes)} (all-time low)`);
   lines.push('');
 
   // Ethernet

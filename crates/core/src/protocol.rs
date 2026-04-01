@@ -404,6 +404,8 @@ pub enum ServerMessage<'a> {
     },
     NetworkStatus {
         board_mac: String,
+        memory: Vec<MemoryRegion>,
+        min_free_heap_bytes: u32,
         ethernet: InterfaceStatus,
         wifi_sta: InterfaceStatus,
         wifi_ap: ApStatus,
@@ -411,6 +413,13 @@ pub enum ServerMessage<'a> {
     Error {
         message: String,
     },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryRegion {
+    pub name: String,
+    pub total_bytes: u32,
+    pub free_bytes: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
