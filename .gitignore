@@ -11,6 +11,7 @@ partitions.csv
 sdkconfig.defaults.partitions
 *.bin
 out.txt
+rustc-ice-*.txt
 node_modules
 /frontend/dist
 /server/dist

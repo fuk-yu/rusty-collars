@@ -46,11 +46,7 @@ esp_idf_sdkconfig_defaults = ["sdkconfig.defaults", "sdkconfig.defaults.partitio
 [[package.metadata.esp-idf-sys.extra_components]]
 remote_component = { name = "espressif/esp_websocket_client", version = "1.6.1" }
 
-# WiFi via companion ESP32-C6 on P4 boards.
-# esp_wifi_remote provides the API wrapper; esp_hosted provides the SDIO transport.
-# Harmless on non-P4 builds (components are inactive without CONFIG_ESP_WIFI_REMOTE_ENABLED).
+# WiFi via companion ESP32-C6 on P4 boards (esp_hosted over SDIO).
+# Target-gated via idf_component.yml rules — only included for esp32p4.
 [[package.metadata.esp-idf-sys.extra_components]]
-remote_component = { name = "espressif/esp_wifi_remote", version = "*" }
-
-[[package.metadata.esp-idf-sys.extra_components]]
-remote_component = { name = "espressif/esp_hosted", version = "*" }
+component_dirs = ["components/p4_wifi_hosted"]

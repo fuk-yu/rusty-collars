@@ -23,5 +23,8 @@ CONFIG_ESP_TASK_WDT_TIMEOUT_S=10
 
 # No Ethernet MAC on C6 (no QEMU OpenETH support)
 
+# Flash size (C6-DevKitC-1 and C6-MINI-1 have 8MB)
+CONFIG_ESPTOOLPY_FLASHSIZE_8MB=y
+
 # NVS
 CONFIG_NVS_ENCRYPTION=n
