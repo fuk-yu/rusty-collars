@@ -4,7 +4,7 @@ use crate::protocol::DeviceSettings;
 use anyhow::Result;
 use esp_idf_svc::eventloop::EspSystemEventLoop;
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
-use log::info;
+use log::{info, warn};
 
 /// Returns true if running in QEMU (only used on ESP32 with OpenETH).
 #[allow(dead_code)]

@@ -1,5 +1,15 @@
-[build]
-target = "riscv32imafc-esp-espidf"
+# All ESP target configurations — this file is static, never overwritten by scripts.
+# Build scripts set --target and MCU env var per target.
+
+[target.xtensa-esp32-espidf]
+linker = "ldproxy"
+runner = "espflash flash --monitor"
+rustflags = ["--cfg", "espidf_time64"]
+
+[target.riscv32imac-esp-espidf]
+linker = "ldproxy"
+runner = "espflash flash --monitor"
+rustflags = ["--cfg", "espidf_time64"]
 
 [target.riscv32imafc-esp-espidf]
 linker = "ldproxy"
@@ -8,6 +18,3 @@ rustflags = ["--cfg", "espidf_time64"]
 
 [unstable]
 build-std = ["std", "panic_abort"]
-
-[env]
-MCU = "esp32p4"

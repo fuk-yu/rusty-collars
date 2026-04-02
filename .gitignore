@@ -8,6 +8,7 @@ export-esp.sh
 .direnv
 espflash.toml
 partitions.csv
+sdkconfig.defaults
 sdkconfig.defaults.partitions
 *.bin
 out.txt

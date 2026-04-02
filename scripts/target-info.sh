@@ -70,30 +70,52 @@ resolve_target() {
   IDF_BUILD_DIR="target/${TARGET_TRIPLE}/release/build/esp-idf-sys-*/out/build"
 }
 
-# Copies the matching .cargo/config-<target>.toml and sdkconfig.defaults.<target>
-# into the active locations.
-activate_target() {
-  local project_dir="${1:?activate_target requires project dir}"
-  resolve_target "${2:?activate_target requires target name}"
+# Sets environment variables for an isolated, non-interfering build of the given target.
+# Multiple targets can build in parallel — no shared files are overwritten.
+setup_build_env() {
+  local project_dir="${1:?setup_build_env requires project dir}"
+  resolve_target "${2:?setup_build_env requires target name}"
 
-  local config_source="${CARGO_CONFIG_SOURCE:-$TARGET_NAME}"
-  cp "$project_dir/.cargo/config-${config_source}.toml" "$project_dir/.cargo/config.toml"
-  cp "$project_dir/sdkconfig.defaults.${TARGET_NAME}" "$project_dir/sdkconfig.defaults"
-  cp "$project_dir/${PARTITION_TABLE}" "$project_dir/partitions.csv"
-  cat > "$project_dir/sdkconfig.defaults.partitions" <<EOF
-CONFIG_PARTITION_TABLE_CUSTOM=y
-CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="$project_dir/partitions.csv"
-EOF
+  # Ensure ESP-IDF checkout matches the version in Cargo.toml
+  _ensure_idf_version "$project_dir"
+
+  # MCU env var for build.rs WiFi cfg detection
+  case "$TARGET_NAME" in
+    esp32)                export MCU="" ;;
+    esp32c6)              export MCU="esp32c6" ;;
+    esp32p4|esp32p4-wifi) export MCU="esp32p4" ;;
+  esac
+
+  # Write combined sdkconfig (common + target + partition) to sdkconfig.defaults.
+  # IDF resolves partition CSV paths relative to its build dir, so use absolute paths.
+  # The resolved IDF sdkconfig is cached per-target in target/<triple>/, so switching
+  # targets only triggers an IDF re-merge, not a full rebuild.
+  {
+    cat "$project_dir/sdkconfig.defaults.common"
+    echo ""
+    case "$TARGET_NAME" in
+      esp32p4-wifi)
+        cat "$project_dir/sdkconfig.defaults.esp32p4"
+        echo ""
+        cat "$project_dir/sdkconfig.defaults.esp32p4-wifi"
+        ;;
+      *)
+        cat "$project_dir/sdkconfig.defaults.$TARGET_NAME"
+        ;;
+    esac
+    echo ""
+    echo "CONFIG_PARTITION_TABLE_CUSTOM=y"
+    echo "CONFIG_PARTITION_TABLE_CUSTOM_FILENAME=\"$project_dir/$PARTITION_TABLE\""
+  } > "$project_dir/sdkconfig.defaults"
+
+  # Clean build cache if toolchain or sdkconfig inputs changed
+  _invalidate_build_cache "$project_dir"
 
   # espflash needs to know the partition table for OTA
   cat > "$project_dir/espflash.toml" <<EOF
 [idf_format_args]
-partition_table = "partitions.csv"
+partition_table = "$PARTITION_TABLE"
 EOF
-
-  # Ensure ESP-IDF checkout matches the version in Cargo.toml
-  _ensure_idf_version "$project_dir"
-  _invalidate_build_cache "$project_dir"
 }
 
 _ensure_idf_version() {
@@ -154,6 +176,7 @@ _build_env_fingerprint() {
   local python_env
   local compiler
   local compiler_version
+  local sdkconfig_hash
 
   wanted="$(load_requested_idf_version "$project_dir")"
   python_env="$(find_requested_idf_python_env "$project_dir" "$wanted")"
@@ -163,6 +186,9 @@ _build_env_fingerprint() {
     compiler_version="$("$compiler" --version | head -1)"
   fi
 
+  # Hash the generated sdkconfig.defaults for this target.
+  sdkconfig_hash="$(sha256sum "$project_dir/sdkconfig.defaults" 2>/dev/null | cut -d' ' -f1)"
+
   cat <<EOF
 target=$TARGET_NAME
 triple=$TARGET_TRIPLE
@@ -170,6 +196,7 @@ idf=$wanted
 python_env=$python_env
 compiler=$compiler
 compiler_version=$compiler_version
+sdkconfig=$sdkconfig_hash
 EOF
 }
 

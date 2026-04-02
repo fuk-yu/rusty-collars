@@ -1,14 +1,6 @@
 use std::io::Write;
 
 fn main() {
-    let project_dir = std::env::current_dir().expect("current_dir");
-    let partitions_csv = project_dir.join("partitions.csv");
-    assert!(
-        partitions_csv.exists(),
-        "partitions.csv not found — run scripts/select-target.sh or scripts/flash.sh first"
-    );
-    println!("cargo:rerun-if-changed=partitions.csv");
-
     embuild::espidf::sysenv::output();
 
     // Determine if this build has WiFi support.
