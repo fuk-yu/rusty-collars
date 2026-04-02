@@ -13,12 +13,10 @@ use esp_idf_svc::ws::client::{
     WebSocketEventType,
 };
 
-use crate::protocol::{
-    ClientMessage, DeviceSettings, EventLogEntryKind, EventSource, RemoteControlStatus,
-};
+use crate::protocol::{ClientMessage, DeviceSettings, EventLogEntryKind, EventSource};
 use crate::server::{
-    self, cancel_owned_manual_actions, pong_json, ActionOwner, AppCtx, MessageOrigin,
-    RemoteControlUrlKind,
+    self, cancel_owned_manual_actions, pong_json, remote_control_status, ActionOwner, AppCtx,
+    MessageOrigin, RemoteControlUrlKind,
 };
 
 const DISABLED_POLL_INTERVAL_MS: u64 = 500;
@@ -64,7 +62,7 @@ fn worker(ctx: AppCtx) {
     loop {
         let settings = ctx.domain.lock().unwrap().device_settings.clone();
         if !settings.remote_control_enabled {
-            ctx.set_remote_control_status(status_from_settings(&settings, false, None, "Off"));
+            ctx.set_remote_control_status(remote_control_status(&settings, false, None, "Off"));
             reconnect_delay_ms = RECONNECT_BASE_DELAY_MS;
             std::thread::sleep(Duration::from_millis(DISABLED_POLL_INTERVAL_MS));
             continue;
@@ -74,14 +72,14 @@ fn worker(ctx: AppCtx) {
         let (url_kind, endpoint_url) = match server::remote_control_endpoint_url(&settings) {
             Ok(endpoint) => endpoint,
             Err(err) => {
-                ctx.set_remote_control_status(status_from_settings(&settings, false, None, err));
+                ctx.set_remote_control_status(remote_control_status(&settings, false, None, err));
                 reconnect_delay_ms = RECONNECT_BASE_DELAY_MS;
                 std::thread::sleep(Duration::from_millis(DISABLED_POLL_INTERVAL_MS));
                 continue;
             }
         };
 
-        ctx.set_remote_control_status(status_from_settings(
+        ctx.set_remote_control_status(remote_control_status(
             &settings,
             false,
             None,
@@ -126,7 +124,7 @@ fn worker(ctx: AppCtx) {
 
                 let retry_status =
                     format!("Retrying in {:.1}s", reconnect_delay_ms as f64 / 1000.0);
-                ctx.set_remote_control_status(status_from_settings(
+                ctx.set_remote_control_status(remote_control_status(
                     &settings,
                     false,
                     None,
@@ -219,13 +217,7 @@ fn run_event_loop(
                 let now = Instant::now();
                 if now >= sync_due_at {
                     next_ping_nonce = next_ping_nonce.wrapping_add(1);
-                    let ping = serde_json::json!({
-                        "type": "ping",
-                        "nonce": next_ping_nonce,
-                    })
-                    .to_string();
-
-                    if let Err(err) = send_text(client, &ping) {
+                    if let Err(err) = send_text(client, &ping_json(next_ping_nonce)) {
                         return RunLoopExit::Disconnected {
                             was_connected: false,
                             reason: err,
@@ -262,13 +254,7 @@ fn run_event_loop(
                 }
             } else if now >= next_ping_at {
                 next_ping_nonce = next_ping_nonce.wrapping_add(1);
-                let ping = serde_json::json!({
-                    "type": "ping",
-                    "nonce": next_ping_nonce,
-                })
-                .to_string();
-
-                if let Err(err) = send_text(client, &ping) {
+                if let Err(err) = send_text(client, &ping_json(next_ping_nonce)) {
                     return RunLoopExit::Disconnected {
                         was_connected: connected,
                         reason: err,
@@ -312,7 +298,7 @@ fn run_event_loop(
                                     };
                                 }
                             }
-                            ctx.set_remote_control_status(status_from_settings(
+                            ctx.set_remote_control_status(remote_control_status(
                                 settings,
                                 true,
                                 Some(rtt_ms),
@@ -452,27 +438,17 @@ fn handle_text(
 
     match message_type {
         "pong" => {
-            let Some(nonce) = value
-                .get("nonce")
-                .and_then(|value| value.as_u64())
-                .and_then(|value| u32::try_from(value).ok())
-            else {
+            let Some(nonce) = extract_nonce(&value) else {
                 send_error(client, "Invalid pong: missing or invalid nonce")?;
                 return Ok(RemoteTextOutcome::None);
             };
-
             Ok(RemoteTextOutcome::Pong(nonce))
         }
         "ping" => {
-            let Some(nonce) = value
-                .get("nonce")
-                .and_then(|value| value.as_u64())
-                .and_then(|value| u32::try_from(value).ok())
-            else {
+            let Some(nonce) = extract_nonce(&value) else {
                 send_error(client, "Invalid ping: missing or invalid nonce")?;
                 return Ok(RemoteTextOutcome::None);
             };
-
             send_text(client, &pong_json(ctx, nonce))?;
             Ok(RemoteTextOutcome::None)
         }
@@ -532,7 +508,7 @@ fn send_initial_state(
     settings: &DeviceSettings,
     client: &mut EspWebSocketClient<'_>,
 ) -> core::result::Result<(), String> {
-    ctx.set_remote_control_status(status_from_settings(settings, true, None, "Connected"));
+    ctx.set_remote_control_status(remote_control_status(settings, true, None, "Connected"));
     ctx.record_event(
         EventSource::System,
         EventLogEntryKind::RemoteControlConnection {
@@ -548,20 +524,15 @@ fn send_initial_state(
     Ok(())
 }
 
-fn status_from_settings(
-    settings: &DeviceSettings,
-    connected: bool,
-    rtt_ms: Option<u32>,
-    status_text: impl Into<String>,
-) -> RemoteControlStatus {
-    RemoteControlStatus {
-        enabled: settings.remote_control_enabled,
-        connected,
-        url: settings.remote_control_url.trim().to_string(),
-        validate_cert: settings.remote_control_validate_cert,
-        rtt_ms,
-        status_text: status_text.into(),
-    }
+fn extract_nonce(value: &serde_json::Value) -> Option<u32> {
+    value
+        .get("nonce")?
+        .as_u64()
+        .and_then(|v| u32::try_from(v).ok())
+}
+
+fn ping_json(nonce: u32) -> String {
+    serde_json::json!({"type": "ping", "nonce": nonce}).to_string()
 }
 
 fn now_rtt_ms(started_at: Instant) -> u32 {

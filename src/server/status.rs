@@ -36,28 +36,36 @@ pub(crate) fn remote_control_endpoint_url(
     Ok((kind, url.to_string()))
 }
 
+pub(crate) fn remote_control_status(
+    settings: &DeviceSettings,
+    connected: bool,
+    rtt_ms: Option<u32>,
+    status_text: impl Into<String>,
+) -> RemoteControlStatus {
+    RemoteControlStatus {
+        enabled: settings.remote_control_enabled,
+        connected,
+        url: settings.remote_control_url.trim().to_string(),
+        validate_cert: settings.remote_control_validate_cert,
+        rtt_ms,
+        status_text: status_text.into(),
+    }
+}
+
 pub(super) fn remote_control_status_from_settings(
     settings: &DeviceSettings,
 ) -> RemoteControlStatus {
     let trimmed_url = settings.remote_control_url.trim();
     let status_text = if !settings.remote_control_enabled {
-        "Off".to_string()
+        "Off"
     } else if trimmed_url.is_empty() {
-        "Missing URL".to_string()
+        "Missing URL"
     } else if parse_remote_control_url(trimmed_url).is_err() {
-        "Invalid URL".to_string()
+        "Invalid URL"
     } else {
-        "Connecting...".to_string()
+        "Connecting..."
     };
-
-    RemoteControlStatus {
-        enabled: settings.remote_control_enabled,
-        connected: false,
-        url: trimmed_url.to_string(),
-        validate_cert: settings.remote_control_validate_cert,
-        rtt_ms: None,
-        status_text,
-    }
+    remote_control_status(settings, false, None, status_text)
 }
 
 pub(super) fn gather_network_status(settings: &DeviceSettings) -> ServerMessage<'static> {

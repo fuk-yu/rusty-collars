@@ -12,11 +12,10 @@ use crate::protocol::{
 use crate::{scheduling, validation};
 
 use super::{
-    command_intensity, device_settings_reboot_required, event_source, log_storage_result,
-    resolve_random_duration, resolve_random_u8, rf_lockout_remaining_ms, rf_send_with_led,
-    rollback_failed_preset_start, save_collars, save_presets, save_settings, stop_active_preset,
-    stop_all_transmissions, ActionKey, ActionOwner, ActiveActionHandle, AppCtx, ControlResult,
-    ManualActionSpec, MessageOrigin, RandomResolver, HAS_WIFI,
+    command_intensity, device_settings_reboot_required, event_source, resolve_random_duration,
+    resolve_random_u8, rf_lockout_remaining_ms, rf_send_with_led, rollback_failed_preset_start,
+    stop_active_preset, stop_all_transmissions, ActionKey, ActionOwner, ActiveActionHandle,
+    AppCtx, ControlResult, ManualActionSpec, MessageOrigin, RandomResolver, HAS_WIFI,
 };
 
 const MANUAL_ACTION_REPEAT_MS: u64 = 200;
@@ -42,20 +41,7 @@ pub(crate) fn pong_json(ctx: &AppCtx, nonce: u32) -> String {
 }
 
 pub(crate) fn cancel_owned_manual_actions(ctx: &AppCtx, owner: ActionOwner) {
-    stop_handles({
-        let mut active_actions = ctx.active_actions.lock().unwrap();
-        let keys_to_remove: Vec<ActionKey> = active_actions
-            .iter()
-            .filter_map(|(key, handle)| {
-                (handle.cancel_on_disconnect && handle.owner == Some(owner)).then(|| key.clone())
-            })
-            .collect();
-
-        keys_to_remove
-            .into_iter()
-            .filter_map(|key| active_actions.remove(&key))
-            .collect()
-    });
+    cancel_manual_actions(ctx, |_, h| h.cancel_on_disconnect && h.owner == Some(owner));
 }
 
 pub(crate) fn process_control_message(
@@ -178,7 +164,7 @@ pub(crate) fn process_control_message(
                 domain.collars.push(collar);
                 domain.collars.clone()
             };
-            log_storage_result("save_collars", save_collars(ctx, &collars));
+            ctx.persist_collars(&collars);
             ctx.broadcast_state();
             Ok(Vec::new())
         }
@@ -229,8 +215,8 @@ pub(crate) fn process_control_message(
                 (domain.collars.clone(), domain.presets.clone())
             };
             cancel_all_manual_actions(ctx);
-            log_storage_result("save_collars", save_collars(ctx, &collars));
-            log_storage_result("save_presets", save_presets(ctx, &presets));
+            ctx.persist_collars(&collars);
+            ctx.persist_presets(&presets);
             ctx.broadcast_state();
             Ok(Vec::new())
         }
@@ -254,7 +240,7 @@ pub(crate) fn process_control_message(
                 domain.collars.clone()
             };
             cancel_all_manual_actions(ctx);
-            log_storage_result("save_collars", save_collars(ctx, &collars));
+            ctx.persist_collars(&collars);
             ctx.broadcast_state();
             Ok(Vec::new())
         }
@@ -304,7 +290,7 @@ pub(crate) fn process_control_message(
                 domain.presets = updated;
                 domain.presets.clone()
             };
-            log_storage_result("save_presets", save_presets(ctx, &presets));
+            ctx.persist_presets(&presets);
             ctx.broadcast_state();
             Ok(Vec::new())
         }
@@ -322,7 +308,7 @@ pub(crate) fn process_control_message(
                 stop_active_preset(&mut domain, &ctx.preset_run_id);
                 domain.presets.clone()
             };
-            log_storage_result("save_presets", save_presets(ctx, &presets));
+            ctx.persist_presets(&presets);
             ctx.broadcast_state();
             Ok(Vec::new())
         }
@@ -416,13 +402,7 @@ pub(crate) fn process_control_message(
             Ok(Vec::new())
         }
 
-        ClientMessage::StartRfDebug => {
-            Err("RF debug control is only available on the local UI".to_string())
-        }
-        ClientMessage::StopRfDebug => {
-            Err("RF debug control is only available on the local UI".to_string())
-        }
-        ClientMessage::ClearRfDebug => {
+        ClientMessage::StartRfDebug | ClientMessage::StopRfDebug | ClientMessage::ClearRfDebug => {
             Err("RF debug control is only available on the local UI".to_string())
         }
         ClientMessage::Reboot => Err("Device reboot is only available on the local UI".to_string()),
@@ -491,7 +471,7 @@ pub(crate) fn process_control_message(
                     .fetch_add(1, Ordering::SeqCst);
             }
 
-            match save_settings(ctx, &settings_to_save) {
+            match ctx.persist_settings(&settings_to_save) {
                 Ok(()) => info!("Device settings saved to NVS"),
                 Err(err) => error!("NVS save_settings failed: {err:#}"),
             }
@@ -513,26 +493,17 @@ pub(crate) fn process_control_message(
         ClientMessage::PreviewPreset { nonce, mut preset } => {
             preset.normalize();
             let collars = ctx.domain.lock().unwrap().collars.clone();
-            let message = match validation::validate_preset(&preset, &collars) {
-                Ok(()) => match scheduling::preview_preset(&preset, &collars) {
-                    Ok(preview) => ServerMessage::PresetPreview {
-                        nonce,
-                        preview: Some(preview),
-                        error: None,
-                    },
-                    Err(err) => ServerMessage::PresetPreview {
-                        nonce,
-                        preview: None,
-                        error: Some(err.to_string()),
-                    },
-                },
-                Err(err) => ServerMessage::PresetPreview {
-                    nonce,
-                    preview: None,
-                    error: Some(err.to_string()),
-                },
+            let (preview, error) = match validation::validate_preset(&preset, &collars)
+                .and_then(|()| scheduling::preview_preset(&preset, &collars))
+            {
+                Ok(preview) => (Some(preview), None),
+                Err(err) => (None, Some(err.to_string())),
             };
-            json_message(&message)
+            json_message(&ServerMessage::PresetPreview {
+                nonce,
+                preview,
+                error,
+            })
         }
 
         ClientMessage::ReorderPresets { names } => {
@@ -559,7 +530,7 @@ pub(crate) fn process_control_message(
                 domain.presets = reordered;
                 domain.presets.clone()
             };
-            log_storage_result("save_presets", save_presets(ctx, &presets));
+            ctx.persist_presets(&presets);
             ctx.broadcast_state();
             Ok(Vec::new())
         }
@@ -573,14 +544,14 @@ pub(crate) fn process_control_message(
                 presets: domain.presets.clone(),
             };
             drop(domain);
-            normalize_presets(&mut data.presets);
+            data.presets.iter_mut().for_each(Preset::normalize);
             json_message(&ServerMessage::ExportData { data: &data })
         }
 
         ClientMessage::Import { mut data } => {
             ensure_local_ui(origin, "import")?;
 
-            normalize_presets(&mut data.presets);
+            data.presets.iter_mut().for_each(Preset::normalize);
             validation::validate_export_data(&data).map_err(|err| err.to_string())?;
             let (collars, presets) = {
                 let mut domain = ctx.domain.lock().unwrap();
@@ -590,8 +561,8 @@ pub(crate) fn process_control_message(
                 (domain.collars.clone(), domain.presets.clone())
             };
             cancel_all_manual_actions(ctx);
-            log_storage_result("save_collars", save_collars(ctx, &collars));
-            log_storage_result("save_presets", save_presets(ctx, &presets));
+            ctx.persist_collars(&collars);
+            ctx.persist_presets(&presets);
             ctx.broadcast_state();
             Ok(Vec::new())
         }
@@ -641,17 +612,24 @@ fn stop_manual_action(ctx: &AppCtx, collar_name: &str, mode: CommandMode) {
 }
 
 fn cancel_all_manual_actions(ctx: &AppCtx) {
-    stop_handles(
-        ctx.active_actions
-            .lock()
-            .unwrap()
-            .drain()
-            .map(|(_, handle)| handle)
-            .collect(),
-    );
+    cancel_manual_actions(ctx, |_, _| true);
 }
 
-fn stop_handles(handles: Vec<ActiveActionHandle>) {
+fn cancel_manual_actions(
+    ctx: &AppCtx,
+    predicate: impl Fn(&ActionKey, &ActiveActionHandle) -> bool,
+) {
+    let handles: Vec<ActiveActionHandle> = {
+        let mut active = ctx.active_actions.lock().unwrap();
+        let keys: Vec<ActionKey> = active
+            .iter()
+            .filter(|(k, h)| predicate(k, h))
+            .map(|(k, _)| k.clone())
+            .collect();
+        keys.into_iter()
+            .filter_map(|k| active.remove(&k))
+            .collect()
+    };
     for handle in handles {
         handle.cancel.store(false, Ordering::SeqCst);
     }
@@ -824,8 +802,3 @@ fn json_message(message: &impl serde::Serialize) -> ControlResult {
     Ok(vec![serde_json::to_string(message).unwrap()])
 }
 
-fn normalize_presets(presets: &mut [Preset]) {
-    for preset in presets {
-        preset.normalize();
-    }
-}

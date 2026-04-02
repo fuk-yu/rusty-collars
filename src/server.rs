@@ -33,7 +33,9 @@ const VALID_UNIX_TIME_THRESHOLD_MS: u64 = 946_684_800_000;
 
 pub(crate) use control::{cancel_owned_manual_actions, pong_json, process_control_message};
 pub use runtime::run_server;
-pub(crate) use status::{parse_remote_control_url, remote_control_endpoint_url};
+pub(crate) use status::{
+    parse_remote_control_url, remote_control_endpoint_url, remote_control_status,
+};
 
 struct RandomResolver<'a> {
     rng: &'a mut SmallRng,
@@ -348,6 +350,26 @@ impl AppCtx {
             false,
         );
     }
+
+    fn persist_collars(&self, collars: &[Collar]) {
+        if let Err(err) = self.storage.lock().unwrap().save_collars(collars) {
+            log::error!("NVS save_collars failed: {err:#}");
+        }
+    }
+
+    fn persist_presets(&self, presets: &[Preset]) {
+        if let Err(err) = self.storage.lock().unwrap().save_presets(presets) {
+            log::error!("NVS save_presets failed: {err:#}");
+        }
+    }
+
+    fn persist_settings(&self, settings: &DeviceSettings) -> Result<()> {
+        self.storage
+            .lock()
+            .unwrap()
+            .save_settings(settings)
+            .map_err(Into::into)
+    }
 }
 
 fn rf_lockout_remaining_ms(domain: &DomainState) -> u64 {
@@ -470,36 +492,6 @@ fn rf_send_with_led(
         .unwrap()
         .send_command(collar_id, channel, mode_byte, intensity)
         .map_err(Into::into)
-}
-
-fn save_collars(ctx: &AppCtx, collars: &[Collar]) -> Result<()> {
-    ctx.storage
-        .lock()
-        .unwrap()
-        .save_collars(collars)
-        .map_err(Into::into)
-}
-
-fn save_presets(ctx: &AppCtx, presets: &[Preset]) -> Result<()> {
-    ctx.storage
-        .lock()
-        .unwrap()
-        .save_presets(presets)
-        .map_err(Into::into)
-}
-
-fn save_settings(ctx: &AppCtx, settings: &DeviceSettings) -> Result<()> {
-    ctx.storage
-        .lock()
-        .unwrap()
-        .save_settings(settings)
-        .map_err(Into::into)
-}
-
-fn log_storage_result(operation: &str, result: Result<()>) {
-    if let Err(err) = result {
-        log::error!("NVS {operation} failed: {err:#}");
-    }
 }
 
 pub(crate) fn error_json(message: impl Into<String>) -> String {

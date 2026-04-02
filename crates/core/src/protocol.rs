@@ -254,7 +254,7 @@ impl PresetStepMode {
 
     /// Whether this mode uses the intensity field.
     pub fn has_intensity(self) -> bool {
-        matches!(self, Self::Shock | Self::Vibrate)
+        self.to_command_mode().is_some_and(|m| m.has_intensity())
     }
 }
 
