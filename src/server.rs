@@ -27,7 +27,9 @@ const RF_STOP_LOCKOUT_MS: u64 = 10_000;
 const VALID_UNIX_TIME_THRESHOLD_MS: u64 = 946_684_800_000;
 
 pub use context::{AppCtx, ConnectionState};
-pub(crate) use control::{cancel_owned_manual_actions, pong_json, process_control_message};
+pub(crate) use control::{
+    cancel_owned_manual_actions, local_ui_dispatcher, pong_json, remote_control_dispatcher,
+};
 pub use runtime::run_server;
 pub(crate) use state::{
     ActionKey, ActionOwner, ActiveActionHandle, BroadcastMsg, DebugCtx, DomainState, HardwareCtx,

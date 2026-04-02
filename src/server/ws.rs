@@ -8,8 +8,7 @@ use picoserve::response::ws::{self, Message};
 use crate::protocol::ClientMessage;
 
 use super::{
-    cancel_owned_manual_actions, error_json, process_control_message, ActionOwner, ConnectionState,
-    MessageOrigin,
+    cancel_owned_manual_actions, error_json, local_ui_dispatcher, ActionOwner, ConnectionState,
 };
 
 const WS_BUF_SIZE: usize = 2048;
@@ -153,7 +152,7 @@ async fn handle_text_message<W: picoserve::io::Write>(
                 esp_idf_svc::sys::esp_restart();
             }
         }
-        msg => match process_control_message(ctx, msg, MessageOrigin::LocalUi, Some(owner)) {
+        msg => match local_ui_dispatcher(ctx, owner).handle(msg) {
             Ok(messages) => {
                 for message in messages {
                     tx.send_text(&message).await?;

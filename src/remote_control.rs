@@ -15,8 +15,8 @@ use esp_idf_svc::ws::client::{
 use crate::error::RemoteControlError;
 use crate::protocol::{ClientMessage, DeviceSettings, EventLogEntryKind, EventSource};
 use crate::server::{
-    self, cancel_owned_manual_actions, pong_json, remote_control_status, ActionOwner, AppCtx,
-    MessageOrigin, RemoteControlUrlKind,
+    self, cancel_owned_manual_actions, pong_json, remote_control_dispatcher, remote_control_status,
+    ActionOwner, AppCtx, RemoteControlUrlKind,
 };
 
 const DISABLED_POLL_INTERVAL_MS: u64 = 500;
@@ -463,12 +463,7 @@ fn handle_text(
                 }
             };
 
-            match server::process_control_message(
-                ctx,
-                msg,
-                MessageOrigin::RemoteControl,
-                Some(ActionOwner::RemoteControl),
-            ) {
+            match remote_control_dispatcher(ctx).handle(msg) {
                 Ok(messages) => {
                     for message in messages {
                         send_text(client, &message)?;
