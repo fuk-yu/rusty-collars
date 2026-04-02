@@ -43,7 +43,7 @@ fn main() {
 
     println!(
         "cargo:rustc-env=RUSTY_COLLARS_APP_VERSION={}",
-        app_version()
+        version
     );
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=Cargo.toml");

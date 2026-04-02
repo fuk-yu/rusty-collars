@@ -28,7 +28,8 @@ impl ws::WebSocketCallbackWithState<ConnectionState> for WsHandler {
         let ws_addr = state.conn_addr.clone();
         info!("[#{ws_id}] WebSocket connected from {ws_addr}");
 
-        ctx.ws_clients
+        ctx.sessions
+            .ws_clients
             .lock()
             .unwrap()
             .push((ws_id, ws_addr.clone()));
@@ -36,7 +37,7 @@ impl ws::WebSocketCallbackWithState<ConnectionState> for WsHandler {
             tx.send_text(&json).await?;
         }
 
-        let mut broadcast_rx = ctx.broadcast_tx.new_receiver();
+        let mut broadcast_rx = ctx.sessions.broadcast_tx.new_receiver();
         let mut listening_rf_debug = false;
         let mut buf = vec![0u8; WS_BUF_SIZE];
 
@@ -78,13 +79,17 @@ impl ws::WebSocketCallbackWithState<ConnectionState> for WsHandler {
         }
 
         if listening_rf_debug {
-            let previous = ctx.rf_debug_listener_count.fetch_sub(1, Ordering::SeqCst);
+            let previous = ctx
+                .debug
+                .rf_debug_listener_count
+                .fetch_sub(1, Ordering::SeqCst);
             if previous <= 1 {
-                ctx.rf_debug_enabled.store(false, Ordering::SeqCst);
+                ctx.debug.rf_debug_enabled.store(false, Ordering::SeqCst);
             }
         }
         cancel_owned_manual_actions(ctx, ActionOwner::LocalWs(ws_id));
-        ctx.ws_clients
+        ctx.sessions
+            .ws_clients
             .lock()
             .unwrap()
             .retain(|(id, _)| *id != ws_id);
@@ -113,8 +118,10 @@ async fn handle_text_message<W: picoserve::io::Write>(
     match msg {
         ClientMessage::StartRfDebug => {
             *listening_rf_debug = true;
-            ctx.rf_debug_listener_count.fetch_add(1, Ordering::SeqCst);
-            ctx.rf_debug_enabled.store(true, Ordering::SeqCst);
+            ctx.debug
+                .rf_debug_listener_count
+                .fetch_add(1, Ordering::SeqCst);
+            ctx.debug.rf_debug_enabled.store(true, Ordering::SeqCst);
             super::runtime::ensure_rf_debug_worker(ctx);
             let json = ctx.rf_debug_state_json(true);
             tx.send_text(&json).await?;
@@ -122,9 +129,12 @@ async fn handle_text_message<W: picoserve::io::Write>(
         ClientMessage::StopRfDebug => {
             if *listening_rf_debug {
                 *listening_rf_debug = false;
-                let previous = ctx.rf_debug_listener_count.fetch_sub(1, Ordering::SeqCst);
+                let previous = ctx
+                    .debug
+                    .rf_debug_listener_count
+                    .fetch_sub(1, Ordering::SeqCst);
                 if previous <= 1 {
-                    ctx.rf_debug_enabled.store(false, Ordering::SeqCst);
+                    ctx.debug.rf_debug_enabled.store(false, Ordering::SeqCst);
                 }
             }
             let json = ctx.rf_debug_state_json(false);
@@ -150,7 +160,7 @@ async fn handle_text_message<W: picoserve::io::Write>(
                 }
             }
             Err(message) => {
-                send_error(tx, message).await?;
+                send_error(tx, message.to_string()).await?;
             }
         },
     }

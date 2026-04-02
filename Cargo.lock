@@ -1577,6 +1577,7 @@ dependencies = [
  "rusty-collars-core",
  "serde",
  "serde_json",
+ "thiserror 2.0.18",
  "url",
  "uuid",
 ]

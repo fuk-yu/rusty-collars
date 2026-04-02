@@ -3,6 +3,7 @@ use esp_idf_svc::nvs::{EspDefaultNvsPartition, EspNvs, NvsDefault};
 use log::info;
 
 use crate::protocol::{Collar, DeviceSettings, Preset};
+use crate::repository::{CollarRepository, PresetRepository, SettingsRepository};
 
 const NAMESPACE: &str = "collars";
 const KEY_COLLARS: &str = "col";
@@ -82,6 +83,40 @@ impl Storage {
         let json = serde_json::to_string(data)?;
         self.nvs.set_str(key, &json)?;
         Ok(())
+    }
+}
+
+impl SettingsRepository for Storage {
+    fn ensure_device_id(&mut self, settings: &mut DeviceSettings) -> Result<()> {
+        Storage::ensure_device_id(self, settings)
+    }
+
+    fn load_settings(&mut self) -> Result<DeviceSettings> {
+        Storage::load_settings(self)
+    }
+
+    fn save_settings(&mut self, settings: &DeviceSettings) -> Result<()> {
+        Storage::save_settings(self, settings)
+    }
+}
+
+impl CollarRepository for Storage {
+    fn load_collars(&mut self) -> Result<Vec<Collar>> {
+        Storage::load_collars(self)
+    }
+
+    fn save_collars(&mut self, collars: &[Collar]) -> Result<()> {
+        Storage::save_collars(self, collars)
+    }
+}
+
+impl PresetRepository for Storage {
+    fn load_presets(&mut self) -> Result<Vec<Preset>> {
+        Storage::load_presets(self)
+    }
+
+    fn save_presets(&mut self, presets: &[Preset]) -> Result<()> {
+        Storage::save_presets(self, presets)
     }
 }
 

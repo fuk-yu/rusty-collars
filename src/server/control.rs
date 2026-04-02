@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 
 use log::{error, info};
 
+use crate::error::ControlError;
 use crate::protocol::{
     ClientMessage, Collar, CommandMode, Distribution, EventLogEntryKind, ExportData, Preset,
     ServerMessage, MAX_INTENSITY,
@@ -19,6 +20,7 @@ use super::{
 
 pub(crate) fn pong_json(ctx: &AppCtx, nonce: u32) -> String {
     let client_ips: Vec<String> = ctx
+        .sessions
         .ws_clients
         .lock()
         .unwrap()
@@ -54,8 +56,8 @@ pub(crate) fn process_control_message(
         } => {
             let (collar, intensity) = resolve_collar_command(ctx, &collar_name, mode, intensity)?;
             if let Err(err) = rf_send_with_led(
-                &ctx.rf,
-                &ctx.tx_led,
+                &ctx.hardware.rf,
+                &ctx.hardware.tx_led,
                 collar.collar_id,
                 collar.channel,
                 mode.to_rf_byte(),
@@ -149,13 +151,14 @@ pub(crate) fn process_control_message(
             };
             let collars = {
                 let mut domain = ctx.domain.lock().unwrap();
-                validation::validate_collar(&collar).map_err(|err| err.to_string())?;
+                validation::validate_collar(&collar)
+                    .map_err(|err| ControlError::Validation(err.to_string()))?;
                 if domain
                     .collars
                     .iter()
                     .any(|existing| existing.name == collar.name)
                 {
-                    return Err(format!("Collar '{}' already exists", collar.name));
+                    return Err(ControlError::DuplicateCollar(collar.name.clone()));
                 }
                 domain.collars.push(collar);
                 domain.collars.clone()
@@ -183,9 +186,10 @@ pub(crate) fn process_control_message(
                     .iter()
                     .position(|collar| collar.name == original_name)
                 else {
-                    return Err(format!("Unknown collar: {original_name}"));
+                    return Err(ControlError::UnknownCollar(original_name));
                 };
-                validation::validate_collar(&updated).map_err(|err| err.to_string())?;
+                validation::validate_collar(&updated)
+                    .map_err(|err| ControlError::Validation(err.to_string()))?;
                 if domain
                     .collars
                     .iter()
@@ -194,7 +198,7 @@ pub(crate) fn process_control_message(
                         existing_index != index && collar.name == updated.name
                     })
                 {
-                    return Err(format!("Collar '{}' already exists", updated.name));
+                    return Err(ControlError::DuplicateCollar(updated.name.clone()));
                 }
 
                 domain.collars[index] = updated.clone();
@@ -207,7 +211,7 @@ pub(crate) fn process_control_message(
                         }
                     }
                 }
-                stop_active_preset(&mut domain, &ctx.preset_run_id);
+                stop_active_preset(&mut domain, &ctx.worker.preset_run_id);
                 (domain.collars.clone(), domain.presets.clone())
             };
             cancel_all_manual_actions(ctx);
@@ -225,14 +229,14 @@ pub(crate) fn process_control_message(
                     .iter()
                     .any(|preset| preset.tracks.iter().any(|track| track.collar_name == name))
                 {
-                    return Err(format!("Cannot delete '{name}': presets reference it"));
+                    return Err(ControlError::CollarReferencedByPreset(name));
                 }
                 let before = domain.collars.len();
                 domain.collars.retain(|collar| collar.name != name);
                 if domain.collars.len() == before {
-                    return Err(format!("Unknown collar: {name}"));
+                    return Err(ControlError::UnknownCollar(name));
                 }
-                stop_active_preset(&mut domain, &ctx.preset_run_id);
+                stop_active_preset(&mut domain, &ctx.worker.preset_run_id);
                 domain.collars.clone()
             };
             cancel_all_manual_actions(ctx);
@@ -249,7 +253,7 @@ pub(crate) fn process_control_message(
             let presets = {
                 let mut domain = ctx.domain.lock().unwrap();
                 validation::validate_preset(&preset, &domain.collars)
-                    .map_err(|err| err.to_string())?;
+                    .map_err(|err| ControlError::Validation(err.to_string()))?;
                 let original_name = original_name
                     .as_deref()
                     .map(str::trim)
@@ -260,7 +264,7 @@ pub(crate) fn process_control_message(
                         .iter()
                         .position(|existing| existing.name == original_name)
                     else {
-                        return Err(format!("Unknown preset: {original_name}"));
+                        return Err(ControlError::UnknownPreset(original_name.to_string()));
                     };
                     if updated
                         .iter()
@@ -269,7 +273,7 @@ pub(crate) fn process_control_message(
                             existing_index != index && existing.name == preset.name
                         })
                     {
-                        return Err(format!("Preset '{}' already exists", preset.name));
+                        return Err(ControlError::DuplicatePreset(preset.name.clone()));
                     }
                     updated[index] = preset;
                 } else if let Some(existing) = updated
@@ -281,8 +285,8 @@ pub(crate) fn process_control_message(
                     updated.push(preset);
                 }
                 validation::validate_presets(&updated, &domain.collars)
-                    .map_err(|err| err.to_string())?;
-                stop_active_preset(&mut domain, &ctx.preset_run_id);
+                    .map_err(|err| ControlError::Validation(err.to_string()))?;
+                stop_active_preset(&mut domain, &ctx.worker.preset_run_id);
                 domain.presets = updated;
                 domain.presets.clone()
             };
@@ -299,9 +303,9 @@ pub(crate) fn process_control_message(
                 let before = domain.presets.len();
                 domain.presets.retain(|preset| preset.name != name);
                 if domain.presets.len() == before {
-                    return Err(format!("Unknown preset: {name}"));
+                    return Err(ControlError::UnknownPreset(name));
                 }
-                stop_active_preset(&mut domain, &ctx.preset_run_id);
+                stop_active_preset(&mut domain, &ctx.worker.preset_run_id);
                 domain.presets.clone()
             };
             ctx.persist_presets(&presets);
@@ -314,7 +318,7 @@ pub(crate) fn process_control_message(
             let (preset_name, resolved_preset_for_log) = {
                 let mut domain = ctx.domain.lock().unwrap();
                 if rf_lockout_remaining_ms(&domain) > 0 {
-                    return Err("Transmissions locked after STOP".to_string());
+                    return Err(ControlError::TransmissionLockout);
                 }
 
                 let Some(preset) = domain
@@ -323,16 +327,16 @@ pub(crate) fn process_control_message(
                     .find(|preset| preset.name == name)
                     .cloned()
                 else {
-                    return Err(format!("Unknown preset: {name}"));
+                    return Err(ControlError::UnknownPreset(name.clone()));
                 };
                 validation::validate_preset(&preset, &domain.collars)
-                    .map_err(|err| err.to_string())?;
+                    .map_err(|err| ControlError::Validation(err.to_string()))?;
 
                 let has_random = preset
                     .tracks
                     .iter()
                     .any(|track| track.steps.iter().any(|step| step.has_random()));
-                let mut rng = ctx.rng.lock().unwrap();
+                let mut rng = ctx.worker.rng.lock().unwrap();
                 let mut resolver = RandomResolver { rng: &mut *rng };
                 let resolved = scheduling::resolve_preset(&preset, &mut resolver);
                 let events = scheduling::schedule_preset_events(
@@ -340,7 +344,7 @@ pub(crate) fn process_control_message(
                     &domain.collars,
                     &mut scheduling::MidpointResolver,
                 )
-                .map_err(|err| err.to_string())?;
+                .map_err(|err| ControlError::Validation(err.to_string()))?;
                 let resolved_for_log = has_random.then_some(resolved);
 
                 domain.pending_preset = Some(PendingPreset {
@@ -349,7 +353,7 @@ pub(crate) fn process_control_message(
                 });
                 domain.preset_name = Some(name.clone());
                 // Increment run_id AFTER setting pending_preset so the worker sees events
-                ctx.preset_run_id.fetch_add(1, Ordering::SeqCst);
+                ctx.worker.preset_run_id.fetch_add(1, Ordering::SeqCst);
 
                 (preset.name.clone(), resolved_for_log)
             };
@@ -371,7 +375,7 @@ pub(crate) fn process_control_message(
                 let mut domain = ctx.domain.lock().unwrap();
                 domain.pending_preset = None;
                 domain.preset_name = None;
-                ctx.preset_run_id.fetch_add(1, Ordering::SeqCst);
+                ctx.worker.preset_run_id.fetch_add(1, Ordering::SeqCst);
             }
             ctx.notify_worker();
             ctx.broadcast_state();
@@ -381,7 +385,7 @@ pub(crate) fn process_control_message(
         ClientMessage::StopAll => {
             {
                 let mut domain = ctx.domain.lock().unwrap();
-                stop_all_transmissions(&mut domain, &ctx.preset_run_id);
+                stop_all_transmissions(&mut domain, &ctx.worker.preset_run_id);
             }
             cancel_all_manual_actions(ctx);
             ctx.broadcast_state();
@@ -389,9 +393,13 @@ pub(crate) fn process_control_message(
         }
 
         ClientMessage::StartRfDebug | ClientMessage::StopRfDebug | ClientMessage::ClearRfDebug => {
-            Err("RF debug control is only available on the local UI".to_string())
+            Err(ControlError::LocalUiOnly {
+                operation: "RF debug control",
+            })
         }
-        ClientMessage::Reboot => Err("Device reboot is only available on the local UI".to_string()),
+        ClientMessage::Reboot => Err(ControlError::LocalUiOnly {
+            operation: "Device reboot",
+        }),
 
         ClientMessage::GetDeviceSettings => {
             ensure_local_ui(origin, "get_device_settings")?;
@@ -419,10 +427,11 @@ pub(crate) fn process_control_message(
             settings.remote_control_url = settings.remote_control_url.trim().to_string();
 
             if settings.ntp_enabled && settings.ntp_server.is_empty() {
-                return Err("NTP server cannot be empty when time sync is enabled".to_string());
+                return Err(ControlError::EmptyNtpServer);
             }
             if settings.remote_control_enabled {
-                super::parse_remote_control_url(&settings.remote_control_url)?;
+                super::parse_remote_control_url(&settings.remote_control_url)
+                    .map_err(ControlError::RemoteControlUrl)?;
             }
 
             info!("Saving device settings...");
@@ -453,7 +462,8 @@ pub(crate) fn process_control_message(
             };
 
             if remote_settings_changed {
-                ctx.remote_control_settings_revision
+                ctx.sessions
+                    .remote_control_settings_revision
                     .fetch_add(1, Ordering::SeqCst);
             }
 
@@ -538,10 +548,11 @@ pub(crate) fn process_control_message(
             ensure_local_ui(origin, "import")?;
 
             data.presets.iter_mut().for_each(Preset::normalize);
-            validation::validate_export_data(&data).map_err(|err| err.to_string())?;
+            validation::validate_export_data(&data)
+                .map_err(|err| ControlError::Validation(err.to_string()))?;
             let (collars, presets) = {
                 let mut domain = ctx.domain.lock().unwrap();
-                stop_active_preset(&mut domain, &ctx.preset_run_id);
+                stop_active_preset(&mut domain, &ctx.worker.preset_run_id);
                 domain.collars = data.collars;
                 domain.presets = data.presets;
                 (domain.collars.clone(), domain.presets.clone())
@@ -560,7 +571,7 @@ fn resolve_collar_command(
     collar_name: &str,
     mode: CommandMode,
     intensity: u8,
-) -> core::result::Result<(Collar, u8), String> {
+) -> core::result::Result<(Collar, u8), ControlError> {
     let (collar, lockout) = {
         let domain = ctx.domain.lock().unwrap();
         (
@@ -574,16 +585,16 @@ fn resolve_collar_command(
     };
 
     if lockout > 0 {
-        return Err("Transmissions locked after STOP".to_string());
+        return Err(ControlError::TransmissionLockout);
     }
     if mode.has_intensity() && intensity > MAX_INTENSITY {
-        return Err(format!(
-            "Intensity {} exceeds max {}",
-            intensity, MAX_INTENSITY
-        ));
+        return Err(ControlError::InvalidIntensity {
+            intensity,
+            max: MAX_INTENSITY,
+        });
     }
 
-    let collar = collar.ok_or_else(|| format!("Unknown collar: {collar_name}"))?;
+    let collar = collar.ok_or_else(|| ControlError::UnknownCollar(collar_name.to_string()))?;
     Ok((collar, command_intensity(mode, intensity)))
 }
 
@@ -592,7 +603,7 @@ fn stop_manual_action(ctx: &AppCtx, collar_name: &str, mode: CommandMode) {
         collar_name: collar_name.to_string(),
         mode,
     };
-    if let Some(handle) = ctx.active_actions.lock().unwrap().remove(&key) {
+    if let Some(handle) = ctx.worker.active_actions.lock().unwrap().remove(&key) {
         record_action_completion(ctx, &key, &handle);
     }
     ctx.notify_worker();
@@ -607,7 +618,7 @@ fn cancel_manual_actions(
     predicate: impl Fn(&ActionKey, &ActiveActionHandle) -> bool,
 ) {
     let removed: Vec<(ActionKey, ActiveActionHandle)> = {
-        let mut active = ctx.active_actions.lock().unwrap();
+        let mut active = ctx.worker.active_actions.lock().unwrap();
         let keys: Vec<ActionKey> = active
             .iter()
             .filter(|(k, h)| predicate(k, h))
@@ -658,30 +669,28 @@ fn start_manual_action(
     source: crate::protocol::EventSource,
     owner: Option<ActionOwner>,
     cancel_on_disconnect: bool,
-) -> core::result::Result<(), String> {
+) -> core::result::Result<(), ControlError> {
     let (collar, normalized_intensity) =
         resolve_collar_command(ctx, &collar_name, mode, intensity)?;
     if matches!(duration_ms, Some(0)) {
-        return Err("Action duration must be greater than zero".to_string());
+        return Err(ControlError::ActionDurationZero);
     }
     if cancel_on_disconnect && owner.is_none() {
-        return Err("Held actions require an owning connection".to_string());
+        return Err(ControlError::HeldActionRequiresOwner);
     }
 
-    // Resolve random intensity
     let actual_intensity = match intensity_max {
         Some(max) if max > normalized_intensity && mode.has_intensity() => {
-            let mut rng = ctx.rng.lock().unwrap();
+            let mut rng = ctx.worker.rng.lock().unwrap();
             resolve_random_u8(&mut *rng, normalized_intensity, max, intensity_distribution)
         }
         _ => normalized_intensity,
     };
 
-    // Resolve random duration and compute deadline
     let now = Instant::now();
     let actual_duration_ms = match (duration_ms, duration_max_ms) {
         (Some(min), Some(max)) if max > min => {
-            let mut rng = ctx.rng.lock().unwrap();
+            let mut rng = ctx.worker.rng.lock().unwrap();
             Some(resolve_random_duration(
                 &mut *rng,
                 min,
@@ -708,6 +717,7 @@ fn start_manual_action(
     };
 
     let previous = ctx
+        .worker
         .active_actions
         .lock()
         .unwrap()
@@ -720,15 +730,17 @@ fn start_manual_action(
     Ok(())
 }
 
-fn ensure_local_ui(origin: MessageOrigin, operation: &str) -> core::result::Result<(), String> {
+fn ensure_local_ui(
+    origin: MessageOrigin,
+    operation: &'static str,
+) -> core::result::Result<(), ControlError> {
     if origin == MessageOrigin::RemoteControl {
-        Err(format!("{operation} is not available over remote control"))
+        Err(ControlError::LocalUiOnly { operation })
     } else {
         Ok(())
     }
 }
 
 fn json_message(message: &impl serde::Serialize) -> ControlResult {
-    Ok(vec![serde_json::to_string(message).unwrap()])
+    Ok(vec![serde_json::to_string(message)?])
 }
-

@@ -6,6 +6,13 @@ use esp_idf_svc::eventloop::EspSystemEventLoop;
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
 use log::{info, warn};
 
+#[cfg(esp32)]
+type EthernetKeepalive =
+    esp_idf_svc::eth::BlockingEth<esp_idf_svc::eth::EspEth<'static, esp_idf_svc::eth::OpenEth>>;
+
+#[cfg(not(esp32))]
+type EthernetKeepalive = ();
+
 /// Returns true if running in QEMU (only used on ESP32 with OpenETH).
 #[allow(dead_code)]
 pub fn is_qemu() -> bool {
@@ -21,7 +28,7 @@ pub fn is_qemu() -> bool {
 pub enum NetworkHandle {
     #[cfg(has_wifi)]
     Wifi(crate::wifi::WifiController),
-    Eth,
+    Eth(EthernetKeepalive),
     None,
 }
 
@@ -37,7 +44,7 @@ impl NetworkHandle {
         match self {
             #[cfg(has_wifi)]
             Self::Wifi(_) => true,
-            Self::Eth => true,
+            Self::Eth(_) => true,
             Self::None => false,
         }
     }
@@ -218,7 +225,7 @@ pub fn connect(
     let netif = unsafe { start_p4_ethernet() };
     let got_ip = unsafe { wait_netif_ip(netif, std::time::Duration::from_secs(30)) };
     assert!(got_ip, "Ethernet DHCP timeout (30s)");
-    Ok(NetworkHandle::Eth)
+    Ok(NetworkHandle::Eth(()))
 }
 
 // --- ESP32-P4-WiFi: Ethernet + WiFi via companion ESP32-C6 (esp_hosted over SDIO) ---
@@ -318,8 +325,7 @@ fn connect_qemu_eth(
         let ip_info = blocking_eth.eth().netif().get_ip_info()?;
         info!("OpenETH connected! IP: {}", ip_info.ip);
 
-        Box::leak(Box::new(blocking_eth));
-        return Ok(NetworkHandle::Eth);
+        return Ok(NetworkHandle::Eth(blocking_eth));
     }
 
     #[cfg(not(esp_idf_eth_use_openeth))]

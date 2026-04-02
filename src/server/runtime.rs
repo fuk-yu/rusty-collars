@@ -1,21 +1,18 @@
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use log::{error, info, warn};
 
 use crate::async_runtime::{AsyncIoSocket, AsyncIoTimer};
-use crate::protocol::ServerMessage;
 use crate::scheduling::PresetEvent;
 use rusty_collars_core::rf_timing::RF_COMMAND_TRANSMIT_DURATION_US;
 
-use super::{free_heap, rf_send_with_led, ActionKey, AppCtx, BroadcastMsg};
+use super::{free_heap, rf_send_with_led, ActionKey, AppCtx};
 
 const HTTP_BUF_SIZE: usize = 1024;
 const WORKER_IDLE_TIMEOUT: Duration = Duration::from_millis(10);
-const TX_DURATION: Duration =
-    Duration::from_micros(RF_COMMAND_TRANSMIT_DURATION_US);
+const TX_DURATION: Duration = Duration::from_micros(RF_COMMAND_TRANSMIT_DURATION_US);
 
 struct ActivePreset {
     events: Vec<PresetEvent>,
@@ -38,7 +35,7 @@ pub(super) fn run_transmission_worker(ctx: &AppCtx) {
     info!("Transmission worker started");
 
     let mut active_preset: Option<ActivePreset> = None;
-    let mut last_seen_run_id = ctx.preset_run_id.load(Ordering::SeqCst);
+    let mut last_seen_run_id = ctx.worker.preset_run_id.load(Ordering::SeqCst);
     let mut round_robin_idx: usize = 0;
 
     loop {
@@ -46,7 +43,7 @@ pub(super) fn run_transmission_worker(ctx: &AppCtx) {
         drain_expired_actions(ctx);
 
         // Check for preset changes
-        let current_run_id = ctx.preset_run_id.load(Ordering::SeqCst);
+        let current_run_id = ctx.worker.preset_run_id.load(Ordering::SeqCst);
         if current_run_id != last_seen_run_id {
             last_seen_run_id = current_run_id;
             let pending = ctx.domain.lock().unwrap().pending_preset.take();
@@ -74,8 +71,8 @@ pub(super) fn run_transmission_worker(ctx: &AppCtx) {
                 if elapsed >= target {
                     // Event is due — transmit it
                     if let Err(err) = rf_send_with_led(
-                        &ctx.rf,
-                        &ctx.tx_led,
+                        &ctx.hardware.rf,
+                        &ctx.hardware.tx_led,
                         event.collar_id,
                         event.channel,
                         event.mode_byte,
@@ -92,7 +89,7 @@ pub(super) fn run_transmission_worker(ctx: &AppCtx) {
                         let run_id = preset.run_id;
                         active_preset = None;
                         // Clear preset_name if this preset is still the active one
-                        if ctx.preset_run_id.load(Ordering::SeqCst) == run_id {
+                        if ctx.worker.preset_run_id.load(Ordering::SeqCst) == run_id {
                             let mut domain = ctx.domain.lock().unwrap();
                             if domain.preset_name.as_deref() == Some(&name) {
                                 domain.preset_name = None;
@@ -136,7 +133,7 @@ pub(super) fn run_transmission_worker(ctx: &AppCtx) {
 fn drain_expired_actions(ctx: &AppCtx) {
     let now = Instant::now();
     let expired: Vec<(ActionKey, super::ActiveActionHandle)> = {
-        let mut active = ctx.active_actions.lock().unwrap();
+        let mut active = ctx.worker.active_actions.lock().unwrap();
         let expired_keys: Vec<ActionKey> = active
             .iter()
             .filter(|(_, handle)| matches!(handle.deadline, Some(deadline) if now >= deadline))
@@ -169,7 +166,7 @@ fn drain_expired_actions(ctx: &AppCtx) {
 }
 
 fn next_manual_action(ctx: &AppCtx, round_robin_idx: &mut usize) -> Option<ActionSnapshot> {
-    let active = ctx.active_actions.lock().unwrap();
+    let active = ctx.worker.active_actions.lock().unwrap();
     if active.is_empty() {
         return None;
     }
@@ -197,8 +194,8 @@ fn next_manual_action(ctx: &AppCtx, round_robin_idx: &mut usize) -> Option<Actio
 
 fn transmit_action(ctx: &AppCtx, action: &ActionSnapshot) {
     if let Err(err) = rf_send_with_led(
-        &ctx.rf,
-        &ctx.tx_led,
+        &ctx.hardware.rf,
+        &ctx.hardware.tx_led,
         action.collar_id,
         action.channel,
         action.mode_byte,
@@ -212,12 +209,18 @@ fn transmit_action(ctx: &AppCtx, action: &ActionSnapshot) {
 }
 
 fn wait_for_notify(ctx: &AppCtx, timeout: Duration) {
-    let lock = ctx.worker_notify.0.lock().unwrap();
-    let _ = ctx.worker_notify.1.wait_timeout(lock, timeout).unwrap();
+    let lock = ctx.worker.worker_notify.0.lock().unwrap();
+    let _ = ctx
+        .worker
+        .worker_notify
+        .1
+        .wait_timeout(lock, timeout)
+        .unwrap();
 }
 
 pub(super) fn ensure_rf_debug_worker(ctx: &AppCtx) {
     if ctx
+        .debug
         .rf_debug_worker_spawned
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
         .is_err()
@@ -230,8 +233,9 @@ pub(super) fn ensure_rf_debug_worker(ctx: &AppCtx) {
         .name("rf-debug-rx".into())
         .stack_size(16384)
         .spawn(move || {
-            let Some(mut receiver) = worker_ctx.rf_receiver.lock().unwrap().take() else {
+            let Some(mut receiver) = worker_ctx.hardware.rf_receiver.lock().unwrap().take() else {
                 worker_ctx
+                    .debug
                     .rf_debug_worker_spawned
                     .store(false, Ordering::SeqCst);
                 error!("RF debug receiver missing when worker started");
@@ -240,35 +244,17 @@ pub(super) fn ensure_rf_debug_worker(ctx: &AppCtx) {
 
             info!("RF debug worker started");
             loop {
-                if !worker_ctx.rf_debug_enabled.load(Ordering::SeqCst) {
+                if !worker_ctx.debug.rf_debug_enabled.load(Ordering::SeqCst) {
                     std::thread::sleep(Duration::from_millis(super::RF_DEBUG_DISABLED_SLEEP_MS));
                     continue;
                 }
 
-                match receiver.listen_until_disabled(&worker_ctx.rf_debug_enabled) {
+                match receiver.listen_until_disabled(&worker_ctx.debug.rf_debug_enabled) {
                     Ok(Some(event)) => {
-                        worker_ctx.rx_led.lock().unwrap().set(true);
-                        {
-                            let mut domain = worker_ctx.domain.lock().unwrap();
-                            domain.rf_debug_events.push_back(event.clone());
-                            if domain.rf_debug_events.len() > super::MAX_RF_DEBUG_EVENTS {
-                                domain.rf_debug_events.pop_front();
-                            }
-                        }
-                        worker_ctx
-                            .broadcast_tx
-                            .try_broadcast(BroadcastMsg {
-                                json: Arc::from(
-                                    serde_json::to_string(&ServerMessage::RfDebugEvent {
-                                        event: &event,
-                                    })
-                                    .unwrap(),
-                                ),
-                                rf_debug: true,
-                            })
-                            .ok();
+                        worker_ctx.hardware.rx_led.lock().unwrap().set(true);
+                        worker_ctx.push_rf_debug_event(event);
                         std::thread::sleep(Duration::from_millis(50));
-                        worker_ctx.rx_led.lock().unwrap().set(false);
+                        worker_ctx.hardware.rx_led.lock().unwrap().set(false);
                     }
                     Ok(None) => {}
                     Err(err) => {
@@ -280,7 +266,9 @@ pub(super) fn ensure_rf_debug_worker(ctx: &AppCtx) {
         });
 
     if let Err(err) = result {
-        ctx.rf_debug_worker_spawned.store(false, Ordering::SeqCst);
+        ctx.debug
+            .rf_debug_worker_spawned
+            .store(false, Ordering::SeqCst);
         error!("Failed to spawn RF debug worker: {err}");
     }
 }

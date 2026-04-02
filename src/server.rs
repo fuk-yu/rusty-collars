@@ -1,26 +1,21 @@
-use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::sync::atomic::AtomicU32;
+use std::sync::Mutex;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
-use async_broadcast::Sender as BroadcastSender;
 use rand::rngs::SmallRng;
-use rand::{Rng, SeedableRng};
+use rand::Rng;
 
-use crate::build_info::APP_VERSION;
+use crate::error::ControlError;
 use crate::led::Led;
-use crate::protocol::{
-    Collar, CommandMode, DeviceSettings, Distribution, EventLogEntry, EventLogEntryKind,
-    EventSource, Preset, RemoteControlStatus, RfDebugFrame, ServerMessage,
-};
-use crate::rf::{RfReceiver, RfTransmitter};
-use crate::scheduling::{PresetEvent, StepResolver};
-use crate::storage::Storage;
+use crate::protocol::{CommandMode, DeviceSettings, Distribution, EventSource};
+use crate::rf::RfTransmitter;
 
+mod context;
 mod control;
 mod http;
 mod runtime;
+mod state;
 mod status;
 mod ws;
 
@@ -31,17 +26,24 @@ const RF_DEBUG_DISABLED_SLEEP_MS: u64 = 100;
 const RF_STOP_LOCKOUT_MS: u64 = 10_000;
 const VALID_UNIX_TIME_THRESHOLD_MS: u64 = 946_684_800_000;
 
+pub use context::{AppCtx, ConnectionState};
 pub(crate) use control::{cancel_owned_manual_actions, pong_json, process_control_message};
 pub use runtime::run_server;
+pub(crate) use state::{
+    ActionKey, ActionOwner, ActiveActionHandle, BroadcastMsg, DebugCtx, DomainState, HardwareCtx,
+    MessageOrigin, PendingPreset, RemoteControlUrlKind, SessionCtx, WorkerCtx,
+};
 pub(crate) use status::{
     parse_remote_control_url, remote_control_endpoint_url, remote_control_status,
 };
+
+type ControlResult = core::result::Result<Vec<String>, ControlError>;
 
 struct RandomResolver<'a> {
     rng: &'a mut SmallRng,
 }
 
-impl StepResolver for RandomResolver<'_> {
+impl crate::scheduling::StepResolver for RandomResolver<'_> {
     fn resolve_duration(&mut self, min: u32, max: u32, distribution: Distribution) -> u32 {
         resolve_random_duration(self.rng, min, max, distribution)
     }
@@ -85,293 +87,6 @@ fn gaussian_sample(rng: &mut SmallRng, lo: f32, hi: f32) -> f32 {
     let u2: f32 = rng.random::<f32>();
     let z = (-2.0 * u1.ln()).sqrt() * (2.0 * core::f32::consts::PI * u2).cos();
     mean + sigma * z
-}
-
-#[derive(Clone)]
-pub struct BroadcastMsg {
-    pub json: Arc<str>,
-    pub rf_debug: bool,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum MessageOrigin {
-    LocalUi,
-    RemoteControl,
-}
-
-type ControlResult = core::result::Result<Vec<String>, String>;
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-struct ActionKey {
-    collar_name: String,
-    mode: CommandMode,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(crate) enum ActionOwner {
-    LocalWs(u32),
-    RemoteControl,
-}
-
-struct ActiveActionHandle {
-    owner: Option<ActionOwner>,
-    cancel_on_disconnect: bool,
-    collar_id: u16,
-    channel: u8,
-    mode_byte: u8,
-    intensity: u8,
-    deadline: Option<Instant>,
-    started_at: Instant,
-    source: EventSource,
-}
-
-pub(crate) struct PendingPreset {
-    pub events: Vec<PresetEvent>,
-    pub preset_name: String,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum RemoteControlUrlKind {
-    Ws,
-    Wss,
-}
-
-pub struct DomainState {
-    pub device_settings: DeviceSettings,
-    pub collars: Vec<Collar>,
-    pub presets: Vec<Preset>,
-    pub preset_name: Option<String>,
-    pub pending_preset: Option<PendingPreset>,
-    pub rf_lockout_until_ms: u64,
-    pub rf_debug_events: VecDeque<RfDebugFrame>,
-    pub event_log_events: Vec<EventLogEntry>,
-    pub remote_control_status: RemoteControlStatus,
-}
-
-#[derive(Clone)]
-pub struct AppCtx {
-    pub domain: Arc<Mutex<DomainState>>,
-    pub storage: Arc<Mutex<Storage>>,
-    pub rf: Arc<Mutex<RfTransmitter>>,
-    pub tx_led: Arc<Mutex<Led>>,
-    pub rx_led: Arc<Mutex<Led>>,
-    pub broadcast_tx: BroadcastSender<BroadcastMsg>,
-    pub rf_debug_enabled: Arc<AtomicBool>,
-    pub rf_debug_listener_count: Arc<AtomicU32>,
-    pub rf_debug_worker_spawned: Arc<AtomicBool>,
-    pub rf_receiver: Arc<Mutex<Option<RfReceiver>>>,
-    pub preset_run_id: Arc<AtomicU32>,
-    active_actions: Arc<Mutex<HashMap<ActionKey, ActiveActionHandle>>>,
-    event_log_sequence: Arc<AtomicU32>,
-    pub remote_control_settings_revision: Arc<AtomicU32>,
-    pub rng: Arc<Mutex<SmallRng>>,
-    pub ws_clients: Arc<Mutex<Vec<(u32, String)>>>,
-    worker_notify: Arc<(Mutex<()>, Condvar)>,
-}
-
-#[derive(Clone)]
-pub struct ConnectionState {
-    pub app: AppCtx,
-    pub conn_id: u32,
-    pub conn_addr: String,
-}
-
-impl AppCtx {
-    pub fn new(
-        rf: Arc<Mutex<RfTransmitter>>,
-        tx_led: Arc<Mutex<Led>>,
-        rx_led: Arc<Mutex<Led>>,
-        broadcast_tx: BroadcastSender<BroadcastMsg>,
-        rf_receiver: RfReceiver,
-        device_settings: DeviceSettings,
-        storage: Storage,
-        collars: Vec<Collar>,
-        presets: Vec<Preset>,
-    ) -> Self {
-        let remote_control_status = status::remote_control_status_from_settings(&device_settings);
-        Self {
-            domain: Arc::new(Mutex::new(DomainState {
-                device_settings,
-                collars,
-                presets,
-                preset_name: None,
-                pending_preset: None,
-                rf_lockout_until_ms: 0,
-                rf_debug_events: VecDeque::new(),
-                event_log_events: Vec::new(),
-                remote_control_status,
-            })),
-            storage: Arc::new(Mutex::new(storage)),
-            rf,
-            tx_led,
-            rx_led,
-            broadcast_tx,
-            rf_debug_enabled: Arc::new(AtomicBool::new(false)),
-            rf_debug_listener_count: Arc::new(AtomicU32::new(0)),
-            rf_debug_worker_spawned: Arc::new(AtomicBool::new(false)),
-            rf_receiver: Arc::new(Mutex::new(Some(rf_receiver))),
-            preset_run_id: Arc::new(AtomicU32::new(0)),
-            active_actions: Arc::new(Mutex::new(HashMap::new())),
-            event_log_sequence: Arc::new(AtomicU32::new(0)),
-            remote_control_settings_revision: Arc::new(AtomicU32::new(0)),
-            rng: Arc::new(Mutex::new(SmallRng::seed_from_u64(unsafe {
-                esp_idf_svc::sys::esp_random()
-            } as u64))),
-            ws_clients: Arc::new(Mutex::new(Vec::new())),
-            worker_notify: Arc::new((Mutex::new(()), Condvar::new())),
-        }
-    }
-
-    fn broadcast_json(&self, json: Arc<str>, rf_debug: bool) {
-        let _ = self
-            .broadcast_tx
-            .try_broadcast(BroadcastMsg { json, rf_debug });
-    }
-
-    pub(crate) fn broadcast_state(&self) {
-        self.broadcast_json(self.state_json(), false);
-    }
-
-    pub(crate) fn notify_worker(&self) {
-        let _lock = self.worker_notify.0.lock().unwrap();
-        self.worker_notify.1.notify_one();
-    }
-
-    pub(crate) fn state_json(&self) -> Arc<str> {
-        let domain = self.domain.lock().unwrap();
-        Arc::from(
-            serde_json::to_string(&ServerMessage::State {
-                device_id: &domain.device_settings.device_id,
-                app_version: APP_VERSION,
-                server_uptime_s: uptime_seconds(),
-                collars: &domain.collars,
-                presets: &domain.presets,
-                preset_running: domain.preset_name.as_deref(),
-                rf_lockout_remaining_ms: rf_lockout_remaining_ms(&domain),
-            })
-            .unwrap(),
-        )
-    }
-
-    pub(crate) fn rf_debug_state_json(&self, listening: bool) -> Arc<str> {
-        let domain = self.domain.lock().unwrap();
-        Arc::from(
-            serde_json::to_string(&ServerMessage::RfDebugState {
-                listening,
-                events: &domain.rf_debug_events,
-            })
-            .unwrap(),
-        )
-    }
-
-    pub(crate) fn remote_control_status_json(&self) -> Arc<str> {
-        let status = self.domain.lock().unwrap().remote_control_status.clone();
-        Arc::from(serde_json::to_string(&ServerMessage::RemoteControlStatus { status }).unwrap())
-    }
-
-    pub(crate) fn event_log_state_json(&self) -> Arc<str> {
-        let domain = self.domain.lock().unwrap();
-        Arc::from(
-            serde_json::to_string(&ServerMessage::EventLogState {
-                enabled: domain.device_settings.record_event_log,
-                events: &domain.event_log_events,
-            })
-            .unwrap(),
-        )
-    }
-
-    pub(crate) fn remote_sync_jsons(&self) -> [Arc<str>; 3] {
-        [
-            self.remote_control_status_json(),
-            self.state_json(),
-            self.event_log_state_json(),
-        ]
-    }
-
-    pub(crate) fn local_ui_sync_jsons(&self, listening_rf_debug: bool) -> [Arc<str>; 4] {
-        [
-            self.state_json(),
-            self.remote_control_status_json(),
-            self.event_log_state_json(),
-            self.rf_debug_state_json(listening_rf_debug),
-        ]
-    }
-
-    pub(crate) fn broadcast_remote_control_status(&self) {
-        self.broadcast_json(self.remote_control_status_json(), false);
-    }
-
-    pub(crate) fn broadcast_event_log_state(&self) {
-        self.broadcast_json(self.event_log_state_json(), false);
-    }
-
-    pub(crate) fn set_remote_control_status(&self, status: RemoteControlStatus) {
-        let changed = {
-            let mut domain = self.domain.lock().unwrap();
-            if domain.remote_control_status == status {
-                false
-            } else {
-                domain.remote_control_status = status;
-                true
-            }
-        };
-
-        if changed {
-            self.broadcast_remote_control_status();
-        }
-    }
-
-    pub(crate) fn record_event(&self, source: EventSource, kind: EventLogEntryKind) {
-        let entry = {
-            let mut domain = self.domain.lock().unwrap();
-            if !domain.device_settings.record_event_log {
-                return;
-            }
-
-            let entry = EventLogEntry {
-                sequence: u64::from(self.event_log_sequence.fetch_add(1, Ordering::SeqCst) + 1),
-                monotonic_ms: now_millis(),
-                unix_ms: current_unix_ms(),
-                source,
-                kind,
-            };
-
-            domain.event_log_events.push(entry.clone());
-            if domain.event_log_events.len() > MAX_EVENT_LOG_ENTRIES {
-                let excess = domain.event_log_events.len() - MAX_EVENT_LOG_ENTRIES;
-                domain.event_log_events.drain(0..excess);
-            }
-
-            entry
-        };
-
-        self.broadcast_json(
-            Arc::from(
-                serde_json::to_string(&ServerMessage::EventLogEvent { event: &entry }).unwrap(),
-            ),
-            false,
-        );
-    }
-
-    fn persist_collars(&self, collars: &[Collar]) {
-        if let Err(err) = self.storage.lock().unwrap().save_collars(collars) {
-            log::error!("NVS save_collars failed: {err:#}");
-        }
-    }
-
-    fn persist_presets(&self, presets: &[Preset]) {
-        if let Err(err) = self.storage.lock().unwrap().save_presets(presets) {
-            log::error!("NVS save_presets failed: {err:#}");
-        }
-    }
-
-    fn persist_settings(&self, settings: &DeviceSettings) -> Result<()> {
-        self.storage
-            .lock()
-            .unwrap()
-            .save_settings(settings)
-            .map_err(Into::into)
-    }
 }
 
 fn rf_lockout_remaining_ms(domain: &DomainState) -> u64 {
@@ -432,14 +147,14 @@ fn stop_all_transmissions(domain: &mut DomainState, preset_run_id: &AtomicU32) {
     domain.pending_preset = None;
     domain.preset_name = None;
     domain.rf_lockout_until_ms = now_millis() + RF_STOP_LOCKOUT_MS;
-    preset_run_id.fetch_add(1, Ordering::SeqCst);
+    preset_run_id.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 }
 
 fn stop_active_preset(domain: &mut DomainState, preset_run_id: &AtomicU32) {
     if domain.preset_name.is_some() {
         domain.pending_preset = None;
         domain.preset_name = None;
-        preset_run_id.fetch_add(1, Ordering::SeqCst);
+        preset_run_id.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     }
 }
 
@@ -476,7 +191,7 @@ fn rf_send_with_led(
 }
 
 pub(crate) fn error_json(message: impl Into<String>) -> String {
-    serde_json::to_string(&ServerMessage::Error {
+    serde_json::to_string(&crate::protocol::ServerMessage::Error {
         message: message.into(),
     })
     .unwrap()

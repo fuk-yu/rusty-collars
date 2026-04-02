@@ -5,7 +5,6 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use log::warn;
 
-use esp_idf_svc::handle::RawHandle;
 use esp_idf_svc::io::EspIOError;
 use esp_idf_svc::sys::ESP_ERR_INVALID_ARG;
 use esp_idf_svc::ws::client::{
@@ -13,6 +12,7 @@ use esp_idf_svc::ws::client::{
     WebSocketEventType,
 };
 
+use crate::error::RemoteControlError;
 use crate::protocol::{ClientMessage, DeviceSettings, EventLogEntryKind, EventSource};
 use crate::server::{
     self, cancel_owned_manual_actions, pong_json, remote_control_status, ActionOwner, AppCtx,
@@ -44,16 +44,25 @@ enum RemoteTextOutcome {
 }
 
 enum RunLoopExit {
-    SettingsChanged { was_connected: bool },
-    Disconnected { was_connected: bool, reason: String },
+    SettingsChanged {
+        was_connected: bool,
+    },
+    Disconnected {
+        was_connected: bool,
+        reason: RemoteControlError,
+    },
 }
 
-pub fn start(ctx: AppCtx) -> Result<()> {
-    std::thread::Builder::new()
+pub struct RemoteControlHandle {
+    _join: std::thread::JoinHandle<()>,
+}
+
+pub fn start(ctx: AppCtx) -> Result<RemoteControlHandle> {
+    let join = std::thread::Builder::new()
         .name("remote-control".into())
         .stack_size(65536)
         .spawn(move || worker(ctx))?;
-    Ok(())
+    Ok(RemoteControlHandle { _join: join })
 }
 
 fn worker(ctx: AppCtx) {
@@ -86,7 +95,10 @@ fn worker(ctx: AppCtx) {
             "Connecting...",
         ));
 
-        let settings_revision = ctx.remote_control_settings_revision.load(Ordering::SeqCst);
+        let settings_revision = ctx
+            .sessions
+            .remote_control_settings_revision
+            .load(Ordering::SeqCst);
         let exit = run_connection(&ctx, &settings, &endpoint_url, url_kind, settings_revision);
 
         match exit {
@@ -115,7 +127,7 @@ fn worker(ctx: AppCtx) {
                         EventLogEntryKind::RemoteControlConnection {
                             connected: false,
                             url: url.clone(),
-                            reason: Some(reason.clone()),
+                            reason: Some(reason.to_string()),
                         },
                     );
                 } else {
@@ -152,35 +164,12 @@ fn run_connection(
         Err(err) => {
             return RunLoopExit::Disconnected {
                 was_connected: false,
-                reason: format!("Connect failed: {err:#}"),
+                reason: RemoteControlError::Connect(format!("{err:#}")),
             };
         }
     };
 
-    let exit = run_event_loop(ctx, settings, &mut client, &event_rx, settings_revision);
-    safe_drop_ws_client(client);
-    exit
-}
-
-/// The upstream `EspWebSocketClient::Drop` (esp-idf-svc 0.52) calls `.unwrap()`
-/// on `esp_websocket_client_close` / `esp_websocket_client_destroy`, which panics
-/// (aborting the process on ESP-IDF) when the transport was never established or
-/// was already torn down. Work around this by extracting the raw C handle,
-/// forgetting the Rust wrapper, and manually performing cleanup without unwrap.
-///
-/// Uses `esp_websocket_client_stop` instead of `close` because `close` sends a
-/// CLOSE frame and waits for the server's response — which hangs when the server
-/// is already dead. `stop` tears down the TCP connection immediately.
-///
-/// The callback closure (~64 bytes) is leaked each time. This is acceptable for
-/// a reconnection that happens at most every few seconds.
-fn safe_drop_ws_client(client: EspWebSocketClient<'static>) {
-    let handle = client.handle();
-    std::mem::forget(client);
-    unsafe {
-        let _ = esp_idf_svc::sys::esp_websocket_client_stop(handle);
-        let _ = esp_idf_svc::sys::esp_websocket_client_destroy(handle);
-    }
+    run_event_loop(ctx, settings, &mut client, &event_rx, settings_revision)
 }
 
 fn run_event_loop(
@@ -190,7 +179,7 @@ fn run_event_loop(
     event_rx: &mpsc::Receiver<RemoteWsEvent>,
     settings_revision: u32,
 ) -> RunLoopExit {
-    let mut broadcast_rx = ctx.broadcast_tx.new_receiver();
+    let mut broadcast_rx = ctx.sessions.broadcast_tx.new_receiver();
     let mut connected = false;
     let mut transport_connected = false;
     let connect_started_at = Instant::now();
@@ -200,7 +189,12 @@ fn run_event_loop(
     let mut pending_ping: Option<(u32, Instant)> = None;
 
     loop {
-        if ctx.remote_control_settings_revision.load(Ordering::SeqCst) != settings_revision {
+        if ctx
+            .sessions
+            .remote_control_settings_revision
+            .load(Ordering::SeqCst)
+            != settings_revision
+        {
             return RunLoopExit::SettingsChanged {
                 was_connected: connected,
             };
@@ -249,7 +243,10 @@ fn run_event_loop(
                 if now.duration_since(started_at).as_millis() as u64 >= REMOTE_PING_TIMEOUT_MS {
                     return RunLoopExit::Disconnected {
                         was_connected: connected,
-                        reason: format!("Ping timeout for nonce {nonce}"),
+                        reason: RemoteControlError::PingTimeout {
+                            nonce,
+                            phase: "steady-state",
+                        },
                     };
                 }
             } else if now >= next_ping_at {
@@ -277,7 +274,7 @@ fn run_event_loop(
             Ok(RemoteWsEvent::Disconnected(reason)) => {
                 return RunLoopExit::Disconnected {
                     was_connected: connected,
-                    reason,
+                    reason: RemoteControlError::Disconnected(reason),
                 };
             }
             Ok(RemoteWsEvent::Text(text)) => match handle_text(ctx, client, &text) {
@@ -317,7 +314,7 @@ fn run_event_loop(
             Ok(RemoteWsEvent::Error(reason)) => {
                 return RunLoopExit::Disconnected {
                     was_connected: connected,
-                    reason,
+                    reason: RemoteControlError::Disconnected(reason),
                 };
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {
@@ -326,7 +323,9 @@ fn run_event_loop(
                 {
                     return RunLoopExit::Disconnected {
                         was_connected: false,
-                        reason: format!("Connect timeout after {CONNECT_TIMEOUT_MS}ms"),
+                        reason: RemoteControlError::ConnectTimeout {
+                            timeout_ms: CONNECT_TIMEOUT_MS,
+                        },
                     };
                 }
                 if !connected {
@@ -334,7 +333,10 @@ fn run_event_loop(
                         if started_at.elapsed().as_millis() as u64 >= REMOTE_PING_TIMEOUT_MS {
                             return RunLoopExit::Disconnected {
                                 was_connected: false,
-                                reason: format!("Handshake ping timeout for nonce {nonce}"),
+                                reason: RemoteControlError::PingTimeout {
+                                    nonce,
+                                    phase: "handshake",
+                                },
                             };
                         }
                     }
@@ -343,7 +345,7 @@ fn run_event_loop(
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 return RunLoopExit::Disconnected {
                     was_connected: connected,
-                    reason: "Remote control event channel closed".to_string(),
+                    reason: RemoteControlError::EventChannelClosed,
                 };
             }
         }
@@ -422,7 +424,7 @@ fn handle_text(
     ctx: &AppCtx,
     client: &mut EspWebSocketClient<'_>,
     text: &str,
-) -> core::result::Result<RemoteTextOutcome, String> {
+) -> core::result::Result<RemoteTextOutcome, RemoteControlError> {
     let value: serde_json::Value = match serde_json::from_str(text) {
         Ok(value) => value,
         Err(err) => {
@@ -473,7 +475,7 @@ fn handle_text(
                     }
                 }
                 Err(message) => {
-                    send_error(client, message)?;
+                    send_error(client, message.to_string())?;
                 }
             }
 
@@ -482,16 +484,19 @@ fn handle_text(
     }
 }
 
-fn send_text(client: &mut EspWebSocketClient<'_>, text: &str) -> core::result::Result<(), String> {
+fn send_text(
+    client: &mut EspWebSocketClient<'_>,
+    text: &str,
+) -> core::result::Result<(), RemoteControlError> {
     client
         .send(FrameType::Text(false), text.as_bytes())
-        .map_err(|err| format!("WebSocket send failed: {err:?}"))
+        .map_err(|err| RemoteControlError::WebSocketSend(format!("{err:?}")))
 }
 
 fn send_error(
     client: &mut EspWebSocketClient<'_>,
     message: impl Into<String>,
-) -> core::result::Result<(), String> {
+) -> core::result::Result<(), RemoteControlError> {
     let json = server::error_json(message);
     send_text(client, &json)
 }
@@ -507,7 +512,7 @@ fn send_initial_state(
     ctx: &AppCtx,
     settings: &DeviceSettings,
     client: &mut EspWebSocketClient<'_>,
-) -> core::result::Result<(), String> {
+) -> core::result::Result<(), RemoteControlError> {
     ctx.set_remote_control_status(remote_control_status(settings, true, None, "Connected"));
     ctx.record_event(
         EventSource::System,
