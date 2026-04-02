@@ -13,7 +13,7 @@ pub(super) fn save(
     mut preset: Preset,
 ) -> ControlResult {
     preset.normalize();
-    let presets = {
+    let (presets, preset_stopped) = {
         let mut domain = ctx.domain.lock().unwrap();
         validation::validate_preset(&preset, &domain.collars)
             .map_err(|err| ControlError::Validation(err.to_string()))?;
@@ -49,26 +49,32 @@ pub(super) fn save(
         }
         validation::validate_presets(&updated, &domain.collars)
             .map_err(|err| ControlError::Validation(err.to_string()))?;
-        stop_active_preset(&mut domain, &ctx.worker.preset_run_id);
+        let preset_stopped = stop_active_preset(&mut domain);
         domain.presets = updated;
-        domain.presets.clone()
+        (domain.presets.clone(), preset_stopped)
     };
+    if preset_stopped {
+        ctx.stop_preset_execution();
+    }
     ctx.persist_presets(&presets);
     ctx.broadcast_state();
     Ok(Vec::new())
 }
 
 pub(super) fn delete(ctx: &AppCtx, name: String) -> ControlResult {
-    let presets = {
+    let (presets, preset_stopped) = {
         let mut domain = ctx.domain.lock().unwrap();
         let before = domain.presets.len();
         domain.presets.retain(|preset| preset.name != name);
         if domain.presets.len() == before {
             return Err(ControlError::UnknownPreset(name));
         }
-        stop_active_preset(&mut domain, &ctx.worker.preset_run_id);
-        domain.presets.clone()
+        let preset_stopped = stop_active_preset(&mut domain);
+        (domain.presets.clone(), preset_stopped)
     };
+    if preset_stopped {
+        ctx.stop_preset_execution();
+    }
     ctx.persist_presets(&presets);
     ctx.broadcast_state();
     Ok(Vec::new())

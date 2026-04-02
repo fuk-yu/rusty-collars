@@ -1,14 +1,20 @@
+use std::collections::HashMap;
 use std::sync::atomic::Ordering;
+use std::sync::mpsc::{Receiver, RecvTimeoutError};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use log::{error, info, warn};
 
 use crate::async_runtime::{AsyncIoSocket, AsyncIoTimer};
+use crate::protocol::EventLogEntryKind;
 use crate::scheduling::PresetEvent;
 use rusty_collars_core::rf_timing::RF_COMMAND_TRANSMIT_DURATION_US;
 
-use super::{free_heap, rf_send_with_led, ActionKey, AppCtx};
+use super::{
+    free_heap, rf_send_with_led, ActionKey, ActiveActionHandle, AppCtx, TransmissionCommand,
+};
 
 const HTTP_BUF_SIZE: usize = 1024;
 const WORKER_IDLE_TIMEOUT: Duration = Duration::from_millis(10);
@@ -17,7 +23,6 @@ const TX_DURATION: Duration = Duration::from_micros(RF_COMMAND_TRANSMIT_DURATION
 struct ActivePreset {
     events: Vec<PresetEvent>,
     preset_name: String,
-    run_id: u32,
     started_at: Instant,
     event_index: usize,
 }
@@ -31,37 +36,32 @@ struct ActionSnapshot {
     intensity: u8,
 }
 
-pub(super) fn run_transmission_worker(ctx: &AppCtx) {
+pub struct TransmissionWorkerHandle {
+    _join: JoinHandle<()>,
+}
+
+pub fn start_transmission_worker(ctx: AppCtx) -> TransmissionWorkerHandle {
+    let command_rx = ctx.take_transmission_rx();
+    let join = std::thread::Builder::new()
+        .name("rf-tx-worker".into())
+        .stack_size(32768)
+        .spawn(move || run_transmission_worker(&ctx, command_rx))
+        .expect("failed to spawn RF transmission worker");
+
+    TransmissionWorkerHandle { _join: join }
+}
+
+fn run_transmission_worker(ctx: &AppCtx, command_rx: Receiver<TransmissionCommand>) {
     info!("Transmission worker started");
 
     let mut active_preset: Option<ActivePreset> = None;
-    let mut last_seen_run_id = ctx.worker.preset_run_id.load(Ordering::SeqCst);
+    let mut active_actions: HashMap<ActionKey, ActiveActionHandle> = HashMap::new();
     let mut round_robin_idx: usize = 0;
 
     loop {
-        // Remove expired manual actions
-        drain_expired_actions(ctx);
+        drain_expired_actions(ctx, &mut active_actions);
+        drain_pending_commands(ctx, &command_rx, &mut active_preset, &mut active_actions);
 
-        // Check for preset changes
-        let current_run_id = ctx.worker.preset_run_id.load(Ordering::SeqCst);
-        if current_run_id != last_seen_run_id {
-            last_seen_run_id = current_run_id;
-            let pending = ctx.domain.lock().unwrap().pending_preset.take();
-            if let Some(pending) = pending {
-                info!("Worker: starting preset '{}'", pending.preset_name);
-                active_preset = Some(ActivePreset {
-                    events: pending.events,
-                    preset_name: pending.preset_name,
-                    run_id: current_run_id,
-                    started_at: Instant::now(),
-                    event_index: 0,
-                });
-            } else {
-                active_preset = None;
-            }
-        }
-
-        // Try to transmit a preset event if one is due
         if let Some(ref mut preset) = active_preset {
             if preset.event_index < preset.events.len() {
                 let event = &preset.events[preset.event_index];
@@ -69,7 +69,6 @@ pub(super) fn run_transmission_worker(ctx: &AppCtx) {
                 let elapsed = preset.started_at.elapsed();
 
                 if elapsed >= target {
-                    // Event is due — transmit it
                     if let Err(err) = rf_send_with_led(
                         &ctx.hardware.rf,
                         &ctx.hardware.tx_led,
@@ -82,105 +81,201 @@ pub(super) fn run_transmission_worker(ctx: &AppCtx) {
                     }
                     preset.event_index += 1;
 
-                    // Check if preset completed
                     if preset.event_index >= preset.events.len() {
                         info!("Preset '{}' completed", preset.preset_name);
-                        let name = preset.preset_name.clone();
-                        let run_id = preset.run_id;
+                        let completed_name = preset.preset_name.clone();
                         active_preset = None;
-                        // Clear preset_name if this preset is still the active one
-                        if ctx.worker.preset_run_id.load(Ordering::SeqCst) == run_id {
-                            let mut domain = ctx.domain.lock().unwrap();
-                            if domain.preset_name.as_deref() == Some(&name) {
-                                domain.preset_name = None;
-                            }
-                        }
+                        clear_active_preset_name(ctx, &completed_name);
                         ctx.broadcast_state();
                     }
                     continue;
                 }
 
-                // Event is in the future — can we fit a manual action in the gap?
                 let time_until_event = target - elapsed;
                 if time_until_event > TX_DURATION {
-                    if let Some(action) = next_manual_action(ctx, &mut round_robin_idx) {
+                    if let Some(action) = next_manual_action(&active_actions, &mut round_robin_idx)
+                    {
                         transmit_action(ctx, &action);
                         continue;
                     }
                 }
 
-                // Wait for the preset event (interruptible via condvar for cancellation)
-                let wait = time_until_event.min(WORKER_IDLE_TIMEOUT);
-                wait_for_notify(ctx, wait);
+                wait_for_command(
+                    ctx,
+                    &command_rx,
+                    time_until_event.min(WORKER_IDLE_TIMEOUT),
+                    &mut active_preset,
+                    &mut active_actions,
+                );
                 continue;
-            } else {
-                // All events consumed but we didn't detect completion above (shouldn't happen)
-                active_preset = None;
             }
+
+            let completed_name = preset.preset_name.clone();
+            active_preset = None;
+            clear_active_preset_name(ctx, &completed_name);
+            ctx.broadcast_state();
         }
 
-        // No preset — fill with manual actions
-        if let Some(action) = next_manual_action(ctx, &mut round_robin_idx) {
+        if let Some(action) = next_manual_action(&active_actions, &mut round_robin_idx) {
             transmit_action(ctx, &action);
             continue;
         }
 
-        // Nothing to do — wait for notification
-        wait_for_notify(ctx, WORKER_IDLE_TIMEOUT);
-    }
-}
-
-fn drain_expired_actions(ctx: &AppCtx) {
-    let now = Instant::now();
-    let expired: Vec<(ActionKey, super::ActiveActionHandle)> = {
-        let mut active = ctx.worker.active_actions.lock().unwrap();
-        let expired_keys: Vec<ActionKey> = active
-            .iter()
-            .filter(|(_, handle)| matches!(handle.deadline, Some(deadline) if now >= deadline))
-            .map(|(key, _)| key.clone())
-            .collect();
-        expired_keys
-            .into_iter()
-            .filter_map(|k| {
-                let handle = active.remove(&k)?;
-                Some((k, handle))
-            })
-            .collect()
-    };
-    for (key, handle) in &expired {
-        let elapsed_ms = handle
-            .started_at
-            .elapsed()
-            .as_millis()
-            .min(u32::MAX as u128) as u32;
-        ctx.record_event(
-            handle.source,
-            crate::protocol::EventLogEntryKind::Action {
-                collar_name: key.collar_name.clone(),
-                mode: key.mode,
-                intensity: key.mode.has_intensity().then_some(handle.intensity),
-                duration_ms: elapsed_ms,
-            },
+        wait_for_command(
+            ctx,
+            &command_rx,
+            WORKER_IDLE_TIMEOUT,
+            &mut active_preset,
+            &mut active_actions,
         );
     }
 }
 
-fn next_manual_action(ctx: &AppCtx, round_robin_idx: &mut usize) -> Option<ActionSnapshot> {
-    let active = ctx.worker.active_actions.lock().unwrap();
-    if active.is_empty() {
+fn drain_expired_actions(
+    ctx: &AppCtx,
+    active_actions: &mut HashMap<ActionKey, ActiveActionHandle>,
+) {
+    let now = Instant::now();
+    let expired_keys: Vec<ActionKey> = active_actions
+        .iter()
+        .filter(|(_, handle)| matches!(handle.deadline, Some(deadline) if now >= deadline))
+        .map(|(key, _)| key.clone())
+        .collect();
+
+    for key in expired_keys {
+        if let Some(handle) = active_actions.remove(&key) {
+            record_action_completion(ctx, &key, &handle);
+        }
+    }
+}
+
+fn drain_pending_commands(
+    ctx: &AppCtx,
+    command_rx: &Receiver<TransmissionCommand>,
+    active_preset: &mut Option<ActivePreset>,
+    active_actions: &mut HashMap<ActionKey, ActiveActionHandle>,
+) {
+    while let Ok(command) = command_rx.try_recv() {
+        apply_command(ctx, command, active_preset, active_actions);
+    }
+}
+
+fn wait_for_command(
+    ctx: &AppCtx,
+    command_rx: &Receiver<TransmissionCommand>,
+    timeout: Duration,
+    active_preset: &mut Option<ActivePreset>,
+    active_actions: &mut HashMap<ActionKey, ActiveActionHandle>,
+) {
+    match command_rx.recv_timeout(timeout) {
+        Ok(command) => apply_command(ctx, command, active_preset, active_actions),
+        Err(RecvTimeoutError::Timeout) => {}
+        Err(RecvTimeoutError::Disconnected) => {
+            panic!("transmission worker command channel closed")
+        }
+    }
+}
+
+fn apply_command(
+    ctx: &AppCtx,
+    command: TransmissionCommand,
+    active_preset: &mut Option<ActivePreset>,
+    active_actions: &mut HashMap<ActionKey, ActiveActionHandle>,
+) {
+    match command {
+        TransmissionCommand::UpsertAction { key, handle } => {
+            if let Some(previous) = active_actions.insert(key.clone(), handle) {
+                record_action_completion(ctx, &key, &previous);
+            }
+        }
+        TransmissionCommand::CancelAction { key } => {
+            if let Some(handle) = active_actions.remove(&key) {
+                record_action_completion(ctx, &key, &handle);
+            }
+        }
+        TransmissionCommand::CancelOwnedActions { owner } => {
+            cancel_manual_actions(ctx, active_actions, |_, handle| {
+                handle.cancel_on_disconnect && handle.owner == Some(owner)
+            });
+        }
+        TransmissionCommand::CancelAllActions => {
+            cancel_manual_actions(ctx, active_actions, |_, _| true);
+        }
+        TransmissionCommand::StartPreset {
+            preset_name,
+            events,
+        } => {
+            info!("Worker: starting preset '{preset_name}'");
+            *active_preset = Some(ActivePreset {
+                events,
+                preset_name,
+                started_at: Instant::now(),
+                event_index: 0,
+            });
+        }
+        TransmissionCommand::StopPreset => {
+            *active_preset = None;
+        }
+        TransmissionCommand::StopAll => {
+            *active_preset = None;
+            cancel_manual_actions(ctx, active_actions, |_, _| true);
+        }
+    }
+}
+
+fn cancel_manual_actions(
+    ctx: &AppCtx,
+    active_actions: &mut HashMap<ActionKey, ActiveActionHandle>,
+    predicate: impl Fn(&ActionKey, &ActiveActionHandle) -> bool,
+) {
+    let keys: Vec<ActionKey> = active_actions
+        .iter()
+        .filter(|(key, handle)| predicate(key, handle))
+        .map(|(key, _)| key.clone())
+        .collect();
+
+    for key in keys {
+        if let Some(handle) = active_actions.remove(&key) {
+            record_action_completion(ctx, &key, &handle);
+        }
+    }
+}
+
+fn record_action_completion(ctx: &AppCtx, key: &ActionKey, handle: &ActiveActionHandle) {
+    let elapsed_ms = handle
+        .started_at
+        .elapsed()
+        .as_millis()
+        .min(u32::MAX as u128) as u32;
+    ctx.record_event(
+        handle.source,
+        EventLogEntryKind::Action {
+            collar_name: key.collar_name.clone(),
+            mode: key.mode,
+            intensity: key.mode.has_intensity().then_some(handle.intensity),
+            duration_ms: elapsed_ms,
+        },
+    );
+}
+
+fn next_manual_action(
+    active_actions: &HashMap<ActionKey, ActiveActionHandle>,
+    round_robin_idx: &mut usize,
+) -> Option<ActionSnapshot> {
+    if active_actions.is_empty() {
         return None;
     }
-    // Collect keys for stable round-robin ordering
-    let mut keys: Vec<&ActionKey> = active.keys().collect();
+
+    let mut keys: Vec<&ActionKey> = active_actions.keys().collect();
     keys.sort_by(|a, b| {
         a.collar_name
             .cmp(&b.collar_name)
             .then(a.mode.to_rf_byte().cmp(&b.mode.to_rf_byte()))
     });
 
-    *round_robin_idx = *round_robin_idx % keys.len();
+    *round_robin_idx %= keys.len();
     let key = keys[*round_robin_idx];
-    let handle = &active[key];
+    let handle = &active_actions[key];
     let snapshot = ActionSnapshot {
         key: key.clone(),
         collar_id: handle.collar_id,
@@ -208,14 +303,11 @@ fn transmit_action(ctx: &AppCtx, action: &ActionSnapshot) {
     }
 }
 
-fn wait_for_notify(ctx: &AppCtx, timeout: Duration) {
-    let lock = ctx.worker.worker_notify.0.lock().unwrap();
-    let _ = ctx
-        .worker
-        .worker_notify
-        .1
-        .wait_timeout(lock, timeout)
-        .unwrap();
+fn clear_active_preset_name(ctx: &AppCtx, completed_name: &str) {
+    let mut domain = ctx.domain.lock().unwrap();
+    if domain.preset_name.as_deref() == Some(completed_name) {
+        domain.preset_name = None;
+    }
 }
 
 pub(super) fn ensure_rf_debug_worker(ctx: &AppCtx) {
@@ -274,13 +366,6 @@ pub(super) fn ensure_rf_debug_worker(ctx: &AppCtx) {
 }
 
 pub fn run_server(ctx: AppCtx) -> Result<()> {
-    let worker_ctx = ctx.clone();
-    std::thread::Builder::new()
-        .name("rf-tx-worker".into())
-        .stack_size(32768)
-        .spawn(move || run_transmission_worker(&worker_ctx))
-        .expect("failed to spawn RF transmission worker");
-
     let max_clients = ctx.domain.lock().unwrap().device_settings.max_clients as u32;
     let app_ctx = ctx;
     let base_app = super::http::make_app();

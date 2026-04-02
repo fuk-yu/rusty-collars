@@ -1,6 +1,6 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU32};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{mpsc, Arc, Mutex};
 use std::time::Instant;
 
 use async_broadcast::{InactiveReceiver, Sender as BroadcastSender};
@@ -48,15 +48,30 @@ pub(crate) struct ActiveActionHandle {
     pub source: EventSource,
 }
 
-pub(crate) struct PendingPreset {
-    pub events: Vec<crate::scheduling::PresetEvent>,
-    pub preset_name: String,
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RemoteControlUrlKind {
     Ws,
     Wss,
+}
+
+pub(crate) enum TransmissionCommand {
+    UpsertAction {
+        key: ActionKey,
+        handle: ActiveActionHandle,
+    },
+    CancelAction {
+        key: ActionKey,
+    },
+    CancelOwnedActions {
+        owner: ActionOwner,
+    },
+    CancelAllActions,
+    StartPreset {
+        preset_name: String,
+        events: Vec<crate::scheduling::PresetEvent>,
+    },
+    StopPreset,
+    StopAll,
 }
 
 pub struct DomainState {
@@ -64,7 +79,6 @@ pub struct DomainState {
     pub collars: Vec<Collar>,
     pub presets: Vec<Preset>,
     pub preset_name: Option<String>,
-    pub pending_preset: Option<PendingPreset>,
     pub rf_lockout_until_ms: u64,
     pub rf_debug_events: VecDeque<RfDebugFrame>,
     pub event_log_events: Vec<EventLogEntry>,
@@ -90,9 +104,8 @@ pub struct SessionCtx {
 
 #[derive(Clone)]
 pub struct WorkerCtx {
-    pub preset_run_id: Arc<AtomicU32>,
-    pub active_actions: Arc<Mutex<HashMap<ActionKey, ActiveActionHandle>>>,
-    pub worker_notify: Arc<(Mutex<()>, Condvar)>,
+    pub transmission_tx: mpsc::Sender<TransmissionCommand>,
+    pub transmission_rx: Arc<Mutex<Option<mpsc::Receiver<TransmissionCommand>>>>,
     pub rng: Arc<Mutex<rand::rngs::SmallRng>>,
     pub event_log_sequence: Arc<AtomicU32>,
 }

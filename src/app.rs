@@ -13,7 +13,7 @@ use crate::net::{self, NetworkHandle};
 use crate::remote_control::{self, RemoteControlHandle};
 use crate::repository::{CollarRepository, PresetRepository, SettingsRepository, SharedRepository};
 use crate::rf::{RfReceiver, RfTransmitter};
-use crate::server::{self, AppCtx};
+use crate::server::{self, AppCtx, TransmissionWorkerHandle};
 use crate::storage::Storage;
 use crate::time_sync::{self, TimeSyncHandle};
 
@@ -30,6 +30,7 @@ pub struct RunningApplication {
     _ctx: AppCtx,
     _time_sync: Option<TimeSyncHandle>,
     _remote_control: Option<RemoteControlHandle>,
+    _transmission_worker: TransmissionWorkerHandle,
     _server: ServerHandle,
 }
 
@@ -197,6 +198,7 @@ impl Application {
             None
         };
 
+        let transmission_worker = server::start_transmission_worker(ctx.clone());
         let server_ctx = ctx.clone();
         let server_join = std::thread::Builder::new()
             .name("http-server".into())
@@ -213,6 +215,7 @@ impl Application {
             _ctx: ctx,
             _time_sync: time_sync,
             _remote_control: remote_control,
+            _transmission_worker: transmission_worker,
             _server: ServerHandle { _join: server_join },
         })
     }

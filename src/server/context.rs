@@ -1,6 +1,5 @@
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Mutex};
 
 use async_broadcast::{InactiveReceiver, Sender as BroadcastSender};
 use rand::rngs::SmallRng;
@@ -17,7 +16,8 @@ use crate::rf::{RfReceiver, RfTransmitter};
 use super::status;
 use super::{
     current_unix_ms, now_millis, rf_lockout_remaining_ms, uptime_seconds, BroadcastMsg, DebugCtx,
-    DomainState, HardwareCtx, SessionCtx, WorkerCtx, MAX_EVENT_LOG_ENTRIES, MAX_RF_DEBUG_EVENTS,
+    DomainState, HardwareCtx, SessionCtx, TransmissionCommand, WorkerCtx, MAX_EVENT_LOG_ENTRIES,
+    MAX_RF_DEBUG_EVENTS,
 };
 
 #[derive(Clone)]
@@ -51,13 +51,13 @@ impl AppCtx {
         presets: Vec<Preset>,
     ) -> Self {
         let remote_control_status = status::remote_control_status_from_settings(&device_settings);
+        let (transmission_tx, transmission_rx) = std::sync::mpsc::channel();
         Self {
             domain: Arc::new(Mutex::new(DomainState {
                 device_settings,
                 collars,
                 presets,
                 preset_name: None,
-                pending_preset: None,
                 rf_lockout_until_ms: 0,
                 rf_debug_events: Default::default(),
                 event_log_events: Vec::new(),
@@ -77,9 +77,8 @@ impl AppCtx {
                 remote_control_settings_revision: Arc::new(AtomicU32::new(0)),
             },
             worker: WorkerCtx {
-                preset_run_id: Arc::new(AtomicU32::new(0)),
-                active_actions: Arc::new(Mutex::new(HashMap::new())),
-                worker_notify: Arc::new((Mutex::new(()), Condvar::new())),
+                transmission_tx,
+                transmission_rx: Arc::new(Mutex::new(Some(transmission_rx))),
                 rng: Arc::new(Mutex::new(SmallRng::seed_from_u64(unsafe {
                     esp_idf_svc::sys::esp_random()
                 }
@@ -105,9 +104,59 @@ impl AppCtx {
         self.broadcast_json(self.state_json(), false);
     }
 
-    pub(crate) fn notify_worker(&self) {
-        let _lock = self.worker.worker_notify.0.lock().unwrap();
-        self.worker.worker_notify.1.notify_one();
+    pub(crate) fn set_manual_action(
+        &self,
+        key: super::ActionKey,
+        handle: super::ActiveActionHandle,
+    ) {
+        self.send_transmission_command(TransmissionCommand::UpsertAction { key, handle });
+    }
+
+    pub(crate) fn cancel_manual_action(&self, key: super::ActionKey) {
+        self.send_transmission_command(TransmissionCommand::CancelAction { key });
+    }
+
+    pub(crate) fn cancel_owned_manual_actions(&self, owner: super::ActionOwner) {
+        self.send_transmission_command(TransmissionCommand::CancelOwnedActions { owner });
+    }
+
+    pub(crate) fn cancel_all_manual_actions(&self) {
+        self.send_transmission_command(TransmissionCommand::CancelAllActions);
+    }
+
+    pub(crate) fn start_preset_execution(
+        &self,
+        preset_name: String,
+        events: Vec<crate::scheduling::PresetEvent>,
+    ) {
+        self.send_transmission_command(TransmissionCommand::StartPreset {
+            preset_name,
+            events,
+        });
+    }
+
+    pub(crate) fn stop_preset_execution(&self) {
+        self.send_transmission_command(TransmissionCommand::StopPreset);
+    }
+
+    pub(crate) fn stop_all_execution(&self) {
+        self.send_transmission_command(TransmissionCommand::StopAll);
+    }
+
+    pub(crate) fn take_transmission_rx(&self) -> std::sync::mpsc::Receiver<TransmissionCommand> {
+        self.worker
+            .transmission_rx
+            .lock()
+            .unwrap()
+            .take()
+            .expect("transmission worker receiver already taken")
+    }
+
+    fn send_transmission_command(&self, command: TransmissionCommand) {
+        self.worker
+            .transmission_tx
+            .send(command)
+            .expect("transmission worker command channel closed");
     }
 
     pub(crate) fn state_json(&self) -> Arc<str> {

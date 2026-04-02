@@ -1,4 +1,3 @@
-use std::sync::atomic::AtomicU32;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -30,10 +29,10 @@ pub use context::{AppCtx, ConnectionState};
 pub(crate) use control::{
     cancel_owned_manual_actions, local_ui_dispatcher, pong_json, remote_control_dispatcher,
 };
-pub use runtime::run_server;
+pub use runtime::{run_server, start_transmission_worker, TransmissionWorkerHandle};
 pub(crate) use state::{
     ActionKey, ActionOwner, ActiveActionHandle, BroadcastMsg, DebugCtx, DomainState, HardwareCtx,
-    MessageOrigin, PendingPreset, RemoteControlUrlKind, SessionCtx, WorkerCtx,
+    MessageOrigin, RemoteControlUrlKind, SessionCtx, TransmissionCommand, WorkerCtx,
 };
 pub(crate) use status::{
     parse_remote_control_url, remote_control_endpoint_url, remote_control_status,
@@ -145,18 +144,17 @@ fn device_settings_reboot_required(previous: &DeviceSettings, next: &DeviceSetti
         || previous.ntp_server != next.ntp_server
 }
 
-fn stop_all_transmissions(domain: &mut DomainState, preset_run_id: &AtomicU32) {
-    domain.pending_preset = None;
+fn stop_all_transmissions(domain: &mut DomainState) {
     domain.preset_name = None;
     domain.rf_lockout_until_ms = now_millis() + RF_STOP_LOCKOUT_MS;
-    preset_run_id.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 }
 
-fn stop_active_preset(domain: &mut DomainState, preset_run_id: &AtomicU32) {
+fn stop_active_preset(domain: &mut DomainState) -> bool {
     if domain.preset_name.is_some() {
-        domain.pending_preset = None;
         domain.preset_name = None;
-        preset_run_id.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        true
+    } else {
+        false
     }
 }
 

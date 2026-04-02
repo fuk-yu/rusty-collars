@@ -25,13 +25,20 @@ pub(super) fn import(dispatcher: &ControlDispatcher<'_>, mut data: ExportData) -
     data.presets.iter_mut().for_each(Preset::normalize);
     validation::validate_export_data(&data)
         .map_err(|err| ControlError::Validation(err.to_string()))?;
-    let (collars, presets) = {
+    let (collars, presets, preset_stopped) = {
         let mut domain = dispatcher.ctx.domain.lock().unwrap();
-        stop_active_preset(&mut domain, &dispatcher.ctx.worker.preset_run_id);
+        let preset_stopped = stop_active_preset(&mut domain);
         domain.collars = data.collars;
         domain.presets = data.presets;
-        (domain.collars.clone(), domain.presets.clone())
+        (
+            domain.collars.clone(),
+            domain.presets.clone(),
+            preset_stopped,
+        )
     };
+    if preset_stopped {
+        dispatcher.ctx.stop_preset_execution();
+    }
     cancel_all_manual_actions(dispatcher.ctx);
     dispatcher.ctx.persist_collars(&collars);
     dispatcher.ctx.persist_presets(&presets);

@@ -42,7 +42,7 @@ pub(super) fn update(
         collar_id,
         channel,
     };
-    let (collars, presets) = {
+    let (collars, presets, preset_stopped) = {
         let mut domain = ctx.domain.lock().unwrap();
         let Some(index) = domain
             .collars
@@ -72,9 +72,16 @@ pub(super) fn update(
                 }
             }
         }
-        stop_active_preset(&mut domain, &ctx.worker.preset_run_id);
-        (domain.collars.clone(), domain.presets.clone())
+        let preset_stopped = stop_active_preset(&mut domain);
+        (
+            domain.collars.clone(),
+            domain.presets.clone(),
+            preset_stopped,
+        )
     };
+    if preset_stopped {
+        ctx.stop_preset_execution();
+    }
     cancel_all_manual_actions(ctx);
     ctx.persist_collars(&collars);
     ctx.persist_presets(&presets);
@@ -83,7 +90,7 @@ pub(super) fn update(
 }
 
 pub(super) fn delete(ctx: &AppCtx, name: String) -> ControlResult {
-    let collars = {
+    let (collars, preset_stopped) = {
         let mut domain = ctx.domain.lock().unwrap();
         if domain
             .presets
@@ -97,9 +104,12 @@ pub(super) fn delete(ctx: &AppCtx, name: String) -> ControlResult {
         if domain.collars.len() == before {
             return Err(ControlError::UnknownCollar(name));
         }
-        stop_active_preset(&mut domain, &ctx.worker.preset_run_id);
-        domain.collars.clone()
+        let preset_stopped = stop_active_preset(&mut domain);
+        (domain.collars.clone(), preset_stopped)
     };
+    if preset_stopped {
+        ctx.stop_preset_execution();
+    }
     cancel_all_manual_actions(ctx);
     ctx.persist_collars(&collars);
     ctx.broadcast_state();

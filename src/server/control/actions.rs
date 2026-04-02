@@ -1,4 +1,3 @@
-use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use log::{error, info};
@@ -10,7 +9,7 @@ use crate::{scheduling, validation};
 use super::super::{
     command_intensity, event_source, resolve_random_duration, resolve_random_u8,
     rf_lockout_remaining_ms, rf_send_with_led, stop_all_transmissions, ActionKey, ActionOwner,
-    ActiveActionHandle, AppCtx, ControlResult, PendingPreset, RandomResolver,
+    ActiveActionHandle, AppCtx, ControlResult, RandomResolver,
 };
 use super::ControlDispatcher;
 
@@ -103,13 +102,13 @@ pub(super) fn start_action(
 }
 
 pub(super) fn stop_action(ctx: &AppCtx, collar_name: String, mode: CommandMode) -> ControlResult {
-    stop_manual_action(ctx, &collar_name, mode);
+    ctx.cancel_manual_action(ActionKey { collar_name, mode });
     Ok(Vec::new())
 }
 
 pub(super) fn run_preset(dispatcher: &ControlDispatcher<'_>, name: String) -> ControlResult {
     let source = event_source(dispatcher.origin);
-    let (preset_name, resolved_preset_for_log) = {
+    let (preset_name, resolved_preset_for_log, events) = {
         let mut domain = dispatcher.ctx.domain.lock().unwrap();
         if rf_lockout_remaining_ms(&domain) > 0 {
             return Err(ControlError::TransmissionLockout);
@@ -141,21 +140,14 @@ pub(super) fn run_preset(dispatcher: &ControlDispatcher<'_>, name: String) -> Co
         .map_err(|err| ControlError::Validation(err.to_string()))?;
         let resolved_for_log = has_random.then_some(resolved);
 
-        domain.pending_preset = Some(PendingPreset {
-            events,
-            preset_name: preset.name.clone(),
-        });
         domain.preset_name = Some(name.clone());
-        dispatcher
-            .ctx
-            .worker
-            .preset_run_id
-            .fetch_add(1, Ordering::SeqCst);
 
-        (preset.name.clone(), resolved_for_log)
+        (preset.name.clone(), resolved_for_log, events)
     };
 
-    dispatcher.ctx.notify_worker();
+    dispatcher
+        .ctx
+        .start_preset_execution(preset_name.clone(), events);
     dispatcher.ctx.record_event(
         source,
         EventLogEntryKind::PresetRun {
@@ -168,13 +160,13 @@ pub(super) fn run_preset(dispatcher: &ControlDispatcher<'_>, name: String) -> Co
 }
 
 pub(super) fn stop_preset(ctx: &AppCtx) -> ControlResult {
-    {
+    let stopped = {
         let mut domain = ctx.domain.lock().unwrap();
-        domain.pending_preset = None;
-        domain.preset_name = None;
-        ctx.worker.preset_run_id.fetch_add(1, Ordering::SeqCst);
+        super::super::stop_active_preset(&mut domain)
+    };
+    if stopped {
+        ctx.stop_preset_execution();
     }
-    ctx.notify_worker();
     ctx.broadcast_state();
     Ok(Vec::new())
 }
@@ -182,17 +174,19 @@ pub(super) fn stop_preset(ctx: &AppCtx) -> ControlResult {
 pub(super) fn stop_all(ctx: &AppCtx) -> ControlResult {
     {
         let mut domain = ctx.domain.lock().unwrap();
-        stop_all_transmissions(&mut domain, &ctx.worker.preset_run_id);
+        stop_all_transmissions(&mut domain);
     }
-    cancel_all_manual_actions(ctx);
+    ctx.stop_all_execution();
     ctx.broadcast_state();
     Ok(Vec::new())
 }
 
 pub(super) fn cancel_owned_manual_actions(ctx: &AppCtx, owner: ActionOwner) {
-    cancel_manual_actions(ctx, |_, handle| {
-        handle.cancel_on_disconnect && handle.owner == Some(owner)
-    });
+    ctx.cancel_owned_manual_actions(owner);
+}
+
+pub(super) fn cancel_all_manual_actions(ctx: &AppCtx) {
+    ctx.cancel_all_manual_actions();
 }
 
 fn resolve_collar_command(
@@ -225,64 +219,6 @@ fn resolve_collar_command(
 
     let collar = collar.ok_or_else(|| ControlError::UnknownCollar(collar_name.to_string()))?;
     Ok((collar, command_intensity(mode, intensity)))
-}
-
-fn stop_manual_action(ctx: &AppCtx, collar_name: &str, mode: CommandMode) {
-    let key = ActionKey {
-        collar_name: collar_name.to_string(),
-        mode,
-    };
-    if let Some(handle) = ctx.worker.active_actions.lock().unwrap().remove(&key) {
-        record_action_completion(ctx, &key, &handle);
-    }
-    ctx.notify_worker();
-}
-
-pub(super) fn cancel_all_manual_actions(ctx: &AppCtx) {
-    cancel_manual_actions(ctx, |_, _| true);
-}
-
-fn cancel_manual_actions(
-    ctx: &AppCtx,
-    predicate: impl Fn(&ActionKey, &ActiveActionHandle) -> bool,
-) {
-    let removed: Vec<(ActionKey, ActiveActionHandle)> = {
-        let mut active = ctx.worker.active_actions.lock().unwrap();
-        let keys: Vec<ActionKey> = active
-            .iter()
-            .filter(|(key, handle)| predicate(key, handle))
-            .map(|(key, _)| key.clone())
-            .collect();
-        keys.into_iter()
-            .filter_map(|key| {
-                let handle = active.remove(&key)?;
-                Some((key, handle))
-            })
-            .collect()
-    };
-    for (key, handle) in &removed {
-        record_action_completion(ctx, key, handle);
-    }
-    if !removed.is_empty() {
-        ctx.notify_worker();
-    }
-}
-
-fn record_action_completion(ctx: &AppCtx, key: &ActionKey, handle: &ActiveActionHandle) {
-    let elapsed_ms = handle
-        .started_at
-        .elapsed()
-        .as_millis()
-        .min(u32::MAX as u128) as u32;
-    ctx.record_event(
-        handle.source,
-        EventLogEntryKind::Action {
-            collar_name: key.collar_name.clone(),
-            mode: key.mode,
-            intensity: key.mode.has_intensity().then_some(handle.intensity),
-            duration_ms: elapsed_ms,
-        },
-    );
 }
 
 fn start_manual_action(
@@ -345,16 +281,6 @@ fn start_manual_action(
         source,
     };
 
-    let previous = ctx
-        .worker
-        .active_actions
-        .lock()
-        .unwrap()
-        .insert(key.clone(), handle);
-    if let Some(previous) = previous {
-        record_action_completion(ctx, &key, &previous);
-    }
-
-    ctx.notify_worker();
+    ctx.set_manual_action(key, handle);
     Ok(())
 }
