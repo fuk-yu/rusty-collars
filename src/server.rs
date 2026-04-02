@@ -1,7 +1,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::{Arc, Condvar, Mutex};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
 use async_broadcast::Sender as BroadcastSender;
@@ -15,7 +15,7 @@ use crate::protocol::{
     EventSource, Preset, RemoteControlStatus, RfDebugFrame, ServerMessage,
 };
 use crate::rf::{RfReceiver, RfTransmitter};
-use crate::scheduling::StepResolver;
+use crate::scheduling::{PresetEvent, StepResolver};
 use crate::storage::Storage;
 
 mod control;
@@ -114,25 +114,20 @@ pub(crate) enum ActionOwner {
 }
 
 struct ActiveActionHandle {
-    run_id: u32,
-    cancel: Arc<AtomicBool>,
     owner: Option<ActionOwner>,
     cancel_on_disconnect: bool,
-}
-
-#[derive(Clone)]
-struct ManualActionSpec {
-    key: ActionKey,
     collar_id: u16,
     channel: u8,
-    mode: CommandMode,
+    mode_byte: u8,
     intensity: u8,
-    intensity_max: Option<u8>,
-    duration_ms: Option<u32>,
-    duration_max_ms: Option<u32>,
-    intensity_distribution: Distribution,
-    duration_distribution: Distribution,
+    deadline: Option<Instant>,
+    started_at: Instant,
     source: EventSource,
+}
+
+pub(crate) struct PendingPreset {
+    pub events: Vec<PresetEvent>,
+    pub preset_name: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -146,6 +141,7 @@ pub struct DomainState {
     pub collars: Vec<Collar>,
     pub presets: Vec<Preset>,
     pub preset_name: Option<String>,
+    pub pending_preset: Option<PendingPreset>,
     pub rf_lockout_until_ms: u64,
     pub rf_debug_events: VecDeque<RfDebugFrame>,
     pub event_log_events: Vec<EventLogEntry>,
@@ -166,11 +162,11 @@ pub struct AppCtx {
     pub rf_receiver: Arc<Mutex<Option<RfReceiver>>>,
     pub preset_run_id: Arc<AtomicU32>,
     active_actions: Arc<Mutex<HashMap<ActionKey, ActiveActionHandle>>>,
-    next_action_id: Arc<AtomicU32>,
     event_log_sequence: Arc<AtomicU32>,
     pub remote_control_settings_revision: Arc<AtomicU32>,
     pub rng: Arc<Mutex<SmallRng>>,
     pub ws_clients: Arc<Mutex<Vec<(u32, String)>>>,
+    worker_notify: Arc<(Mutex<()>, Condvar)>,
 }
 
 #[derive(Clone)]
@@ -199,6 +195,7 @@ impl AppCtx {
                 collars,
                 presets,
                 preset_name: None,
+                pending_preset: None,
                 rf_lockout_until_ms: 0,
                 rf_debug_events: VecDeque::new(),
                 event_log_events: Vec::new(),
@@ -215,13 +212,13 @@ impl AppCtx {
             rf_receiver: Arc::new(Mutex::new(Some(rf_receiver))),
             preset_run_id: Arc::new(AtomicU32::new(0)),
             active_actions: Arc::new(Mutex::new(HashMap::new())),
-            next_action_id: Arc::new(AtomicU32::new(0)),
             event_log_sequence: Arc::new(AtomicU32::new(0)),
             remote_control_settings_revision: Arc::new(AtomicU32::new(0)),
             rng: Arc::new(Mutex::new(SmallRng::seed_from_u64(unsafe {
                 esp_idf_svc::sys::esp_random()
             } as u64))),
             ws_clients: Arc::new(Mutex::new(Vec::new())),
+            worker_notify: Arc::new((Mutex::new(()), Condvar::new())),
         }
     }
 
@@ -233,6 +230,11 @@ impl AppCtx {
 
     pub(crate) fn broadcast_state(&self) {
         self.broadcast_json(self.state_json(), false);
+    }
+
+    pub(crate) fn notify_worker(&self) {
+        let _lock = self.worker_notify.0.lock().unwrap();
+        self.worker_notify.1.notify_one();
     }
 
     pub(crate) fn state_json(&self) -> Arc<str> {
@@ -427,38 +429,17 @@ fn device_settings_reboot_required(previous: &DeviceSettings, next: &DeviceSetti
 }
 
 fn stop_all_transmissions(domain: &mut DomainState, preset_run_id: &AtomicU32) {
-    preset_run_id.fetch_add(1, Ordering::SeqCst);
+    domain.pending_preset = None;
     domain.preset_name = None;
     domain.rf_lockout_until_ms = now_millis() + RF_STOP_LOCKOUT_MS;
+    preset_run_id.fetch_add(1, Ordering::SeqCst);
 }
 
 fn stop_active_preset(domain: &mut DomainState, preset_run_id: &AtomicU32) {
     if domain.preset_name.is_some() {
-        preset_run_id.fetch_add(1, Ordering::SeqCst);
+        domain.pending_preset = None;
         domain.preset_name = None;
-    }
-}
-
-fn rollback_failed_preset_start(ctx: &AppCtx, preset_name: &str, run_id: u32) {
-    let rolled_back = {
-        let mut domain = ctx.domain.lock().unwrap();
-        if ctx.preset_run_id.load(Ordering::SeqCst) != run_id
-            || domain.preset_name.as_deref() != Some(preset_name)
-        {
-            false
-        } else {
-            let previous_run_id = ctx.preset_run_id.fetch_sub(1, Ordering::SeqCst);
-            assert_eq!(
-                previous_run_id, run_id,
-                "preset run id changed while rolling back failed preset start"
-            );
-            domain.preset_name = None;
-            true
-        }
-    };
-
-    if rolled_back {
-        ctx.broadcast_state();
+        preset_run_id.fetch_add(1, Ordering::SeqCst);
     }
 }
 

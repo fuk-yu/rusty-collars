@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use log::{error, info};
@@ -13,13 +12,10 @@ use crate::{scheduling, validation};
 
 use super::{
     command_intensity, device_settings_reboot_required, event_source, resolve_random_duration,
-    resolve_random_u8, rf_lockout_remaining_ms, rf_send_with_led, rollback_failed_preset_start,
-    stop_active_preset, stop_all_transmissions, ActionKey, ActionOwner, ActiveActionHandle,
-    AppCtx, ControlResult, ManualActionSpec, MessageOrigin, RandomResolver, HAS_WIFI,
+    resolve_random_u8, rf_lockout_remaining_ms, rf_send_with_led, stop_active_preset,
+    stop_all_transmissions, ActionKey, ActionOwner, ActiveActionHandle, AppCtx, ControlResult,
+    MessageOrigin, PendingPreset, RandomResolver, HAS_WIFI,
 };
-
-const MANUAL_ACTION_REPEAT_MS: u64 = 200;
-const MANUAL_ACTION_SLEEP_SLICE_MS: u64 = 50;
 
 pub(crate) fn pong_json(ctx: &AppCtx, nonce: u32) -> String {
     let client_ips: Vec<String> = ctx
@@ -315,7 +311,7 @@ pub(crate) fn process_control_message(
 
         ClientMessage::RunPreset { name } => {
             let source = event_source(origin);
-            let (preset_name, resolved_preset_for_log, events, run_id) = {
+            let (preset_name, resolved_preset_for_log) = {
                 let mut domain = ctx.domain.lock().unwrap();
                 if rf_lockout_remaining_ms(&domain) > 0 {
                     return Err("Transmissions locked after STOP".to_string());
@@ -346,31 +342,19 @@ pub(crate) fn process_control_message(
                 )
                 .map_err(|err| err.to_string())?;
                 let resolved_for_log = has_random.then_some(resolved);
-                let run_id = ctx.preset_run_id.fetch_add(1, Ordering::SeqCst) + 1;
+
+                domain.pending_preset = Some(PendingPreset {
+                    events,
+                    preset_name: preset.name.clone(),
+                });
                 domain.preset_name = Some(name.clone());
-                (preset.name.clone(), resolved_for_log, events, run_id)
+                // Increment run_id AFTER setting pending_preset so the worker sees events
+                ctx.preset_run_id.fetch_add(1, Ordering::SeqCst);
+
+                (preset.name.clone(), resolved_for_log)
             };
 
-            let ctx2 = ctx.clone();
-            let preset_name_for_thread = preset_name.clone();
-            std::thread::Builder::new()
-                .name("preset".into())
-                .stack_size(32768)
-                .spawn(move || {
-                    super::runtime::run_preset(&preset_name_for_thread, events, &ctx2, run_id);
-                    if ctx2.preset_run_id.load(Ordering::SeqCst) == run_id {
-                        let mut domain = ctx2.domain.lock().unwrap();
-                        if domain.preset_name.as_deref() == Some(preset_name_for_thread.as_str()) {
-                            domain.preset_name = None;
-                        }
-                    }
-                    ctx2.broadcast_state();
-                })
-                .map_err(|err| {
-                    rollback_failed_preset_start(ctx, &preset_name, run_id);
-                    format!("Failed to spawn preset thread: {err}")
-                })?;
-
+            ctx.notify_worker();
             ctx.record_event(
                 source,
                 EventLogEntryKind::PresetRun {
@@ -385,9 +369,11 @@ pub(crate) fn process_control_message(
         ClientMessage::StopPreset => {
             {
                 let mut domain = ctx.domain.lock().unwrap();
-                ctx.preset_run_id.fetch_add(1, Ordering::SeqCst);
+                domain.pending_preset = None;
                 domain.preset_name = None;
+                ctx.preset_run_id.fetch_add(1, Ordering::SeqCst);
             }
+            ctx.notify_worker();
             ctx.broadcast_state();
             Ok(Vec::new())
         }
@@ -607,8 +593,9 @@ fn stop_manual_action(ctx: &AppCtx, collar_name: &str, mode: CommandMode) {
         mode,
     };
     if let Some(handle) = ctx.active_actions.lock().unwrap().remove(&key) {
-        handle.cancel.store(false, Ordering::SeqCst);
+        record_action_completion(ctx, &key, &handle);
     }
+    ctx.notify_worker();
 }
 
 fn cancel_all_manual_actions(ctx: &AppCtx) {
@@ -619,7 +606,7 @@ fn cancel_manual_actions(
     ctx: &AppCtx,
     predicate: impl Fn(&ActionKey, &ActiveActionHandle) -> bool,
 ) {
-    let handles: Vec<ActiveActionHandle> = {
+    let removed: Vec<(ActionKey, ActiveActionHandle)> = {
         let mut active = ctx.active_actions.lock().unwrap();
         let keys: Vec<ActionKey> = active
             .iter()
@@ -627,12 +614,35 @@ fn cancel_manual_actions(
             .map(|(k, _)| k.clone())
             .collect();
         keys.into_iter()
-            .filter_map(|k| active.remove(&k))
+            .filter_map(|k| {
+                let handle = active.remove(&k)?;
+                Some((k, handle))
+            })
             .collect()
     };
-    for handle in handles {
-        handle.cancel.store(false, Ordering::SeqCst);
+    for (key, handle) in &removed {
+        record_action_completion(ctx, key, handle);
     }
+    if !removed.is_empty() {
+        ctx.notify_worker();
+    }
+}
+
+fn record_action_completion(ctx: &AppCtx, key: &ActionKey, handle: &ActiveActionHandle) {
+    let elapsed_ms = handle
+        .started_at
+        .elapsed()
+        .as_millis()
+        .min(u32::MAX as u128) as u32;
+    ctx.record_event(
+        handle.source,
+        EventLogEntryKind::Action {
+            collar_name: key.collar_name.clone(),
+            mode: key.mode,
+            intensity: key.mode.has_intensity().then_some(handle.intensity),
+            duration_ms: elapsed_ms,
+        },
+    );
 }
 
 fn start_manual_action(
@@ -658,136 +668,56 @@ fn start_manual_action(
         return Err("Held actions require an owning connection".to_string());
     }
 
-    let spec = ManualActionSpec {
-        key: ActionKey { collar_name, mode },
-        collar_id: collar.collar_id,
-        channel: collar.channel,
-        mode,
-        intensity: normalized_intensity,
-        intensity_max,
-        duration_ms,
-        duration_max_ms,
-        intensity_distribution,
-        duration_distribution,
-        source,
-    };
-
-    let run_id = ctx.next_action_id.fetch_add(1, Ordering::SeqCst) + 1;
-    let cancel = Arc::new(std::sync::atomic::AtomicBool::new(true));
-    {
-        let mut active_actions = ctx.active_actions.lock().unwrap();
-        if let Some(previous) = active_actions.insert(
-            spec.key.clone(),
-            ActiveActionHandle {
-                run_id,
-                cancel: cancel.clone(),
-                owner,
-                cancel_on_disconnect,
-            },
-        ) {
-            previous.cancel.store(false, Ordering::SeqCst);
-        }
-    }
-
-    let ctx2 = ctx.clone();
-    std::thread::Builder::new()
-        .name("manual-action".into())
-        .stack_size(32768)
-        .spawn(move || {
-            run_manual_action(spec, &ctx2, run_id, cancel);
-        })
-        .map_err(|err| format!("Failed to spawn manual action thread: {err}"))?;
-
-    Ok(())
-}
-
-fn run_manual_action(
-    spec: ManualActionSpec,
-    ctx: &AppCtx,
-    run_id: u32,
-    cancel: Arc<std::sync::atomic::AtomicBool>,
-) {
-    let cleanup_key = spec.key.clone();
-    let started_at = Instant::now();
-    let actual_intensity = match spec.intensity_max {
-        Some(max) if max > spec.intensity && spec.mode.has_intensity() => {
+    // Resolve random intensity
+    let actual_intensity = match intensity_max {
+        Some(max) if max > normalized_intensity && mode.has_intensity() => {
             let mut rng = ctx.rng.lock().unwrap();
-            resolve_random_u8(&mut *rng, spec.intensity, max, spec.intensity_distribution)
+            resolve_random_u8(&mut *rng, normalized_intensity, max, intensity_distribution)
         }
-        _ => spec.intensity,
+        _ => normalized_intensity,
     };
-    let actual_duration_ms = match (spec.duration_ms, spec.duration_max_ms) {
+
+    // Resolve random duration and compute deadline
+    let now = Instant::now();
+    let actual_duration_ms = match (duration_ms, duration_max_ms) {
         (Some(min), Some(max)) if max > min => {
             let mut rng = ctx.rng.lock().unwrap();
             Some(resolve_random_duration(
                 &mut *rng,
                 min,
                 max,
-                spec.duration_distribution,
+                duration_distribution,
             ))
         }
         (duration, _) => duration,
     };
-    let deadline = actual_duration_ms
-        .map(|duration_ms| started_at + Duration::from_millis(duration_ms as u64));
+    let deadline =
+        actual_duration_ms.map(|duration_ms| now + Duration::from_millis(duration_ms as u64));
 
-    'outer: loop {
-        if !cancel.load(Ordering::SeqCst) {
-            break;
-        }
-        if let Some(deadline) = deadline {
-            if Instant::now() >= deadline {
-                break;
-            }
-        }
+    let key = ActionKey { collar_name, mode };
+    let handle = ActiveActionHandle {
+        owner,
+        cancel_on_disconnect,
+        collar_id: collar.collar_id,
+        channel: collar.channel,
+        mode_byte: mode.to_rf_byte(),
+        intensity: actual_intensity,
+        deadline,
+        started_at: now,
+        source,
+    };
 
-        if let Err(err) = rf_send_with_led(
-            &ctx.rf,
-            &ctx.tx_led,
-            spec.collar_id,
-            spec.channel,
-            spec.mode.to_rf_byte(),
-            actual_intensity,
-        ) {
-            error!("RF send error during manual action: {err:#}");
-        }
-
-        let wait_deadline = Instant::now() + Duration::from_millis(MANUAL_ACTION_REPEAT_MS);
-        loop {
-            if !cancel.load(Ordering::SeqCst) {
-                break 'outer;
-            }
-            let now = Instant::now();
-            let next_tick = match deadline {
-                Some(deadline) if deadline < wait_deadline => deadline,
-                _ => wait_deadline,
-            };
-            if now >= next_tick {
-                break;
-            }
-            std::thread::sleep(
-                (next_tick - now).min(Duration::from_millis(MANUAL_ACTION_SLEEP_SLICE_MS)),
-            );
-        }
+    let previous = ctx
+        .active_actions
+        .lock()
+        .unwrap()
+        .insert(key.clone(), handle);
+    if let Some(previous) = previous {
+        record_action_completion(ctx, &key, &previous);
     }
 
-    {
-        let mut active_actions = ctx.active_actions.lock().unwrap();
-        if active_actions.get(&cleanup_key).map(|handle| handle.run_id) == Some(run_id) {
-            active_actions.remove(&cleanup_key);
-        }
-    }
-
-    let elapsed_ms = started_at.elapsed().as_millis().min(u32::MAX as u128) as u32;
-    ctx.record_event(
-        spec.source,
-        EventLogEntryKind::Action {
-            collar_name: spec.key.collar_name,
-            mode: spec.mode,
-            intensity: spec.mode.has_intensity().then_some(actual_intensity),
-            duration_ms: elapsed_ms,
-        },
-    );
+    ctx.notify_worker();
+    Ok(())
 }
 
 fn ensure_local_ui(origin: MessageOrigin, operation: &str) -> core::result::Result<(), String> {

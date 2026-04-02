@@ -1,6 +1,6 @@
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use log::{error, info, warn};
@@ -8,53 +8,212 @@ use log::{error, info, warn};
 use crate::async_runtime::{AsyncIoSocket, AsyncIoTimer};
 use crate::protocol::ServerMessage;
 use crate::scheduling::PresetEvent;
+use rusty_collars_core::rf_timing::RF_COMMAND_TRANSMIT_DURATION_US;
 
-use super::{free_heap, rf_send_with_led, AppCtx, BroadcastMsg};
+use super::{free_heap, rf_send_with_led, ActionKey, AppCtx, BroadcastMsg};
 
 const HTTP_BUF_SIZE: usize = 1024;
+const WORKER_IDLE_TIMEOUT: Duration = Duration::from_millis(10);
+const TX_DURATION: Duration =
+    Duration::from_micros(RF_COMMAND_TRANSMIT_DURATION_US);
 
-pub(super) fn run_preset(preset_name: &str, events: Vec<PresetEvent>, ctx: &AppCtx, run_id: u32) {
-    let started_at = std::time::Instant::now();
+struct ActivePreset {
+    events: Vec<PresetEvent>,
+    preset_name: String,
+    run_id: u32,
+    started_at: Instant,
+    event_index: usize,
+}
 
-    for event in &events {
-        if ctx.preset_run_id.load(Ordering::SeqCst) != run_id {
-            return;
+#[derive(Clone)]
+struct ActionSnapshot {
+    key: ActionKey,
+    collar_id: u16,
+    channel: u8,
+    mode_byte: u8,
+    intensity: u8,
+}
+
+pub(super) fn run_transmission_worker(ctx: &AppCtx) {
+    info!("Transmission worker started");
+
+    let mut active_preset: Option<ActivePreset> = None;
+    let mut last_seen_run_id = ctx.preset_run_id.load(Ordering::SeqCst);
+    let mut round_robin_idx: usize = 0;
+
+    loop {
+        // Remove expired manual actions
+        drain_expired_actions(ctx);
+
+        // Check for preset changes
+        let current_run_id = ctx.preset_run_id.load(Ordering::SeqCst);
+        if current_run_id != last_seen_run_id {
+            last_seen_run_id = current_run_id;
+            let pending = ctx.domain.lock().unwrap().pending_preset.take();
+            if let Some(pending) = pending {
+                info!("Worker: starting preset '{}'", pending.preset_name);
+                active_preset = Some(ActivePreset {
+                    events: pending.events,
+                    preset_name: pending.preset_name,
+                    run_id: current_run_id,
+                    started_at: Instant::now(),
+                    event_index: 0,
+                });
+            } else {
+                active_preset = None;
+            }
         }
 
-        let target = Duration::from_micros(event.time_us);
-        let elapsed = started_at.elapsed();
-        if target > elapsed {
-            let wait = target - elapsed;
-            let chunks = wait.as_millis() as u64 / 50;
-            for _ in 0..chunks {
-                if ctx.preset_run_id.load(Ordering::SeqCst) != run_id {
-                    return;
+        // Try to transmit a preset event if one is due
+        if let Some(ref mut preset) = active_preset {
+            if preset.event_index < preset.events.len() {
+                let event = &preset.events[preset.event_index];
+                let target = Duration::from_micros(event.time_us);
+                let elapsed = preset.started_at.elapsed();
+
+                if elapsed >= target {
+                    // Event is due — transmit it
+                    if let Err(err) = rf_send_with_led(
+                        &ctx.rf,
+                        &ctx.tx_led,
+                        event.collar_id,
+                        event.channel,
+                        event.mode_byte,
+                        event.intensity,
+                    ) {
+                        error!("RF error during preset: {err}");
+                    }
+                    preset.event_index += 1;
+
+                    // Check if preset completed
+                    if preset.event_index >= preset.events.len() {
+                        info!("Preset '{}' completed", preset.preset_name);
+                        let name = preset.preset_name.clone();
+                        let run_id = preset.run_id;
+                        active_preset = None;
+                        // Clear preset_name if this preset is still the active one
+                        if ctx.preset_run_id.load(Ordering::SeqCst) == run_id {
+                            let mut domain = ctx.domain.lock().unwrap();
+                            if domain.preset_name.as_deref() == Some(&name) {
+                                domain.preset_name = None;
+                            }
+                        }
+                        ctx.broadcast_state();
+                    }
+                    continue;
                 }
-                std::thread::sleep(Duration::from_millis(50));
-            }
-            let remainder = wait - Duration::from_millis(chunks * 50);
-            if !remainder.is_zero() {
-                std::thread::sleep(remainder);
+
+                // Event is in the future — can we fit a manual action in the gap?
+                let time_until_event = target - elapsed;
+                if time_until_event > TX_DURATION {
+                    if let Some(action) = next_manual_action(ctx, &mut round_robin_idx) {
+                        transmit_action(ctx, &action);
+                        continue;
+                    }
+                }
+
+                // Wait for the preset event (interruptible via condvar for cancellation)
+                let wait = time_until_event.min(WORKER_IDLE_TIMEOUT);
+                wait_for_notify(ctx, wait);
+                continue;
+            } else {
+                // All events consumed but we didn't detect completion above (shouldn't happen)
+                active_preset = None;
             }
         }
 
-        if ctx.preset_run_id.load(Ordering::SeqCst) != run_id {
-            return;
+        // No preset — fill with manual actions
+        if let Some(action) = next_manual_action(ctx, &mut round_robin_idx) {
+            transmit_action(ctx, &action);
+            continue;
         }
 
-        if let Err(err) = rf_send_with_led(
-            &ctx.rf,
-            &ctx.tx_led,
-            event.collar_id,
-            event.channel,
-            event.mode_byte,
-            event.intensity,
-        ) {
-            error!("RF error during preset: {err}");
-        }
+        // Nothing to do — wait for notification
+        wait_for_notify(ctx, WORKER_IDLE_TIMEOUT);
     }
+}
 
-    info!("Preset '{preset_name}' completed");
+fn drain_expired_actions(ctx: &AppCtx) {
+    let now = Instant::now();
+    let expired: Vec<(ActionKey, super::ActiveActionHandle)> = {
+        let mut active = ctx.active_actions.lock().unwrap();
+        let expired_keys: Vec<ActionKey> = active
+            .iter()
+            .filter(|(_, handle)| matches!(handle.deadline, Some(deadline) if now >= deadline))
+            .map(|(key, _)| key.clone())
+            .collect();
+        expired_keys
+            .into_iter()
+            .filter_map(|k| {
+                let handle = active.remove(&k)?;
+                Some((k, handle))
+            })
+            .collect()
+    };
+    for (key, handle) in &expired {
+        let elapsed_ms = handle
+            .started_at
+            .elapsed()
+            .as_millis()
+            .min(u32::MAX as u128) as u32;
+        ctx.record_event(
+            handle.source,
+            crate::protocol::EventLogEntryKind::Action {
+                collar_name: key.collar_name.clone(),
+                mode: key.mode,
+                intensity: key.mode.has_intensity().then_some(handle.intensity),
+                duration_ms: elapsed_ms,
+            },
+        );
+    }
+}
+
+fn next_manual_action(ctx: &AppCtx, round_robin_idx: &mut usize) -> Option<ActionSnapshot> {
+    let active = ctx.active_actions.lock().unwrap();
+    if active.is_empty() {
+        return None;
+    }
+    // Collect keys for stable round-robin ordering
+    let mut keys: Vec<&ActionKey> = active.keys().collect();
+    keys.sort_by(|a, b| {
+        a.collar_name
+            .cmp(&b.collar_name)
+            .then(a.mode.to_rf_byte().cmp(&b.mode.to_rf_byte()))
+    });
+
+    *round_robin_idx = *round_robin_idx % keys.len();
+    let key = keys[*round_robin_idx];
+    let handle = &active[key];
+    let snapshot = ActionSnapshot {
+        key: key.clone(),
+        collar_id: handle.collar_id,
+        channel: handle.channel,
+        mode_byte: handle.mode_byte,
+        intensity: handle.intensity,
+    };
+    *round_robin_idx = (*round_robin_idx + 1) % keys.len();
+    Some(snapshot)
+}
+
+fn transmit_action(ctx: &AppCtx, action: &ActionSnapshot) {
+    if let Err(err) = rf_send_with_led(
+        &ctx.rf,
+        &ctx.tx_led,
+        action.collar_id,
+        action.channel,
+        action.mode_byte,
+        action.intensity,
+    ) {
+        error!(
+            "RF error during action ({} {:?}): {err}",
+            action.key.collar_name, action.key.mode
+        );
+    }
+}
+
+fn wait_for_notify(ctx: &AppCtx, timeout: Duration) {
+    let lock = ctx.worker_notify.0.lock().unwrap();
+    let _ = ctx.worker_notify.1.wait_timeout(lock, timeout).unwrap();
 }
 
 pub(super) fn ensure_rf_debug_worker(ctx: &AppCtx) {
@@ -127,6 +286,13 @@ pub(super) fn ensure_rf_debug_worker(ctx: &AppCtx) {
 }
 
 pub fn run_server(ctx: AppCtx) -> Result<()> {
+    let worker_ctx = ctx.clone();
+    std::thread::Builder::new()
+        .name("rf-tx-worker".into())
+        .stack_size(32768)
+        .spawn(move || run_transmission_worker(&worker_ctx))
+        .expect("failed to spawn RF transmission worker");
+
     let max_clients = ctx.domain.lock().unwrap().device_settings.max_clients as u32;
     let app_ctx = ctx;
     let base_app = super::http::make_app();
