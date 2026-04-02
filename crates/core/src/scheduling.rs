@@ -38,14 +38,22 @@ pub fn resolve_preset(preset: &Preset, resolver: &mut dyn StepResolver) -> Prese
         for step in &mut track.steps {
             if let Some(max) = step.duration_max_ms {
                 if max > step.duration_ms {
-                    step.duration_ms = resolver.resolve_duration(step.duration_ms, max, step.duration_distribution.unwrap_or_default());
+                    step.duration_ms = resolver.resolve_duration(
+                        step.duration_ms,
+                        max,
+                        step.duration_distribution.unwrap_or_default(),
+                    );
                 }
                 step.duration_max_ms = None;
                 step.duration_distribution = None;
             }
             if let Some(max) = step.intensity_max {
                 if max > step.intensity && step.mode.has_intensity() {
-                    step.intensity = resolver.resolve_intensity(step.intensity, max, step.intensity_distribution.unwrap_or_default());
+                    step.intensity = resolver.resolve_intensity(
+                        step.intensity,
+                        max,
+                        step.intensity_distribution.unwrap_or_default(),
+                    );
                 }
                 step.intensity_max = None;
                 step.intensity_distribution = None;
@@ -214,15 +222,20 @@ fn collect_preset_events(
         for (step_index, step) in track.steps.iter().enumerate() {
             // Resolve random ranges to concrete values
             let duration_ms = match step.duration_max_ms {
-                Some(max) if max > step.duration_ms => {
-                    resolver.resolve_duration(step.duration_ms, max, step.duration_distribution.unwrap_or_default())
-                }
+                Some(max) if max > step.duration_ms => resolver.resolve_duration(
+                    step.duration_ms,
+                    max,
+                    step.duration_distribution.unwrap_or_default(),
+                ),
                 _ => step.duration_ms,
             };
             let intensity = match step.intensity_max {
-                Some(max) if max > step.intensity && step.mode.has_intensity() => {
-                    resolver.resolve_intensity(step.intensity, max, step.intensity_distribution.unwrap_or_default())
-                }
+                Some(max) if max > step.intensity && step.mode.has_intensity() => resolver
+                    .resolve_intensity(
+                        step.intensity,
+                        max,
+                        step.intensity_distribution.unwrap_or_default(),
+                    ),
                 _ => step.intensity,
             };
 

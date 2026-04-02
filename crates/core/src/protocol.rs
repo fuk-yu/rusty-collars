@@ -221,9 +221,7 @@ impl PresetStep {
 
     pub fn midpoint_intensity(&self) -> u8 {
         match self.intensity_max {
-            Some(max) if max > self.intensity => {
-                ((self.intensity as u16 + max as u16) / 2) as u8
-            }
+            Some(max) if max > self.intensity => ((self.intensity as u16 + max as u16) / 2) as u8,
             _ => self.intensity,
         }
     }

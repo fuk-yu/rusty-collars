@@ -27,6 +27,8 @@ async-executor = "1"
 async-broadcast = "0.7"
 futures-lite = "2"
 rand = { version = "0.9", default-features = false, features = ["small_rng"] }
+url = "2.5.8"
+uuid = { version = "1.23.0", default-features = false, features = ["std"] }
 
 [build-dependencies]
 embuild = "0.33"

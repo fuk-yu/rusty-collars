@@ -4,7 +4,7 @@ use crate::protocol::DeviceSettings;
 use anyhow::Result;
 use esp_idf_svc::eventloop::EspSystemEventLoop;
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
-use log::{info, warn};
+use log::info;
 
 /// Returns true if running in QEMU (only used on ESP32 with OpenETH).
 #[allow(dead_code)]
@@ -257,7 +257,9 @@ pub fn connect(
     if eth_has_ip {
         info!("ESP32-P4-WiFi: Ethernet connected");
     } else {
-        info!("ESP32-P4-WiFi: Ethernet not connected yet, will auto-connect when cable is plugged in");
+        info!(
+            "ESP32-P4-WiFi: Ethernet not connected yet, will auto-connect when cable is plugged in"
+        );
     }
 
     // If both ethernet and wifi STA failed initially AND AP is not running, force AP

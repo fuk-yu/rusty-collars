@@ -15,7 +15,6 @@ use esp_idf_svc::ws::client::{
 
 use crate::protocol::{
     ClientMessage, DeviceSettings, EventLogEntryKind, EventSource, RemoteControlStatus,
-    ServerMessage,
 };
 use crate::server::{
     self, cancel_owned_manual_actions, pong_json, ActionOwner, AppCtx, MessageOrigin,
@@ -72,8 +71,8 @@ fn worker(ctx: AppCtx) {
         }
 
         let url = settings.remote_control_url.trim().to_string();
-        let url_kind = match server::parse_remote_control_url(&url) {
-            Ok(kind) => kind,
+        let (url_kind, endpoint_url) = match server::remote_control_endpoint_url(&settings) {
+            Ok(endpoint) => endpoint,
             Err(err) => {
                 ctx.set_remote_control_status(status_from_settings(&settings, false, None, err));
                 reconnect_delay_ms = RECONNECT_BASE_DELAY_MS;
@@ -90,7 +89,7 @@ fn worker(ctx: AppCtx) {
         ));
 
         let settings_revision = ctx.remote_control_settings_revision.load(Ordering::SeqCst);
-        let exit = run_connection(&ctx, &settings, url_kind, settings_revision);
+        let exit = run_connection(&ctx, &settings, &endpoint_url, url_kind, settings_revision);
 
         match exit {
             RunLoopExit::SettingsChanged { was_connected } => {
@@ -144,11 +143,12 @@ fn worker(ctx: AppCtx) {
 fn run_connection(
     ctx: &AppCtx,
     settings: &DeviceSettings,
+    endpoint_url: &str,
     url_kind: RemoteControlUrlKind,
     settings_revision: u32,
 ) -> RunLoopExit {
     let (event_tx, event_rx) = mpsc::channel::<RemoteWsEvent>();
-    let client_result = connect_client(settings, url_kind, event_tx);
+    let client_result = connect_client(settings, endpoint_url, url_kind, event_tx);
     let mut client = match client_result {
         Ok(client) => client,
         Err(err) => {
@@ -210,9 +210,8 @@ fn run_event_loop(
 
         if !transport_connected && client.is_connected() {
             transport_connected = true;
-            initial_sync_due_at = Some(
-                Instant::now() + Duration::from_millis(INITIAL_SYNC_DELAY_MS),
-            );
+            initial_sync_due_at =
+                Some(Instant::now() + Duration::from_millis(INITIAL_SYNC_DELAY_MS));
         }
 
         if transport_connected && !connected && pending_ping.is_none() {
@@ -285,9 +284,8 @@ fn run_event_loop(
             Ok(RemoteWsEvent::Connected) => {
                 if !transport_connected {
                     transport_connected = true;
-                    initial_sync_due_at = Some(
-                        Instant::now() + Duration::from_millis(INITIAL_SYNC_DELAY_MS),
-                    );
+                    initial_sync_due_at =
+                        Some(Instant::now() + Duration::from_millis(INITIAL_SYNC_DELAY_MS));
                 }
             }
             Ok(RemoteWsEvent::Disconnected(reason)) => {
@@ -296,44 +294,40 @@ fn run_event_loop(
                     reason,
                 };
             }
-            Ok(RemoteWsEvent::Text(text)) => {
-                match handle_text(ctx, client, &text) {
-                    Ok(RemoteTextOutcome::None) => {}
-                    Ok(RemoteTextOutcome::Pong(nonce)) => {
-                        if let Some((pending_nonce, started_at)) = pending_ping {
-                            if pending_nonce == nonce {
-                                let rtt_ms = now_rtt_ms(started_at);
-                                pending_ping = None;
-                                if !connected {
-                                    connected = true;
-                                    next_ping_at = Instant::now()
-                                        + Duration::from_millis(REMOTE_PING_INTERVAL_MS);
-                                    if let Err(err) =
-                                        send_initial_state(ctx, settings, client)
-                                    {
-                                        return RunLoopExit::Disconnected {
-                                            was_connected: connected,
-                                            reason: err,
-                                        };
-                                    }
+            Ok(RemoteWsEvent::Text(text)) => match handle_text(ctx, client, &text) {
+                Ok(RemoteTextOutcome::None) => {}
+                Ok(RemoteTextOutcome::Pong(nonce)) => {
+                    if let Some((pending_nonce, started_at)) = pending_ping {
+                        if pending_nonce == nonce {
+                            let rtt_ms = now_rtt_ms(started_at);
+                            pending_ping = None;
+                            if !connected {
+                                connected = true;
+                                next_ping_at =
+                                    Instant::now() + Duration::from_millis(REMOTE_PING_INTERVAL_MS);
+                                if let Err(err) = send_initial_state(ctx, settings, client) {
+                                    return RunLoopExit::Disconnected {
+                                        was_connected: connected,
+                                        reason: err,
+                                    };
                                 }
-                                ctx.set_remote_control_status(status_from_settings(
-                                    settings,
-                                    true,
-                                    Some(rtt_ms),
-                                    "Connected",
-                                ));
                             }
+                            ctx.set_remote_control_status(status_from_settings(
+                                settings,
+                                true,
+                                Some(rtt_ms),
+                                "Connected",
+                            ));
                         }
                     }
-                    Err(err) => {
-                        return RunLoopExit::Disconnected {
-                            was_connected: connected,
-                            reason: err,
-                        };
-                    }
                 }
-            }
+                Err(err) => {
+                    return RunLoopExit::Disconnected {
+                        was_connected: connected,
+                        reason: err,
+                    };
+                }
+            },
             Ok(RemoteWsEvent::Error(reason)) => {
                 return RunLoopExit::Disconnected {
                     was_connected: connected,
@@ -372,6 +366,7 @@ fn run_event_loop(
 
 fn connect_client(
     settings: &DeviceSettings,
+    url: &str,
     url_kind: RemoteControlUrlKind,
     event_tx: mpsc::Sender<RemoteWsEvent>,
 ) -> Result<EspWebSocketClient<'static>> {
@@ -397,17 +392,9 @@ fn connect_client(
         ..Default::default()
     };
 
-    let base_url = settings.remote_control_url.trim();
-    let url = if settings.device_id.is_empty() {
-        base_url.to_string()
-    } else if base_url.ends_with('/') {
-        format!("{}{}", base_url, settings.device_id)
-    } else {
-        format!("{}/{}", base_url, settings.device_id)
-    };
     let event_tx_for_callback = event_tx.clone();
     Ok(EspWebSocketClient::new(
-        &url,
+        url,
         &config,
         WS_SEND_TIMEOUT,
         move |event| {
@@ -428,7 +415,7 @@ fn connect_client(
                     WebSocketEventType::Ping => None,
                     WebSocketEventType::Pong => None,
                     WebSocketEventType::BeforeConnect => None,
-                }
+                },
                 Err(err) => {
                     if should_ignore_callback_error(&err) {
                         None
@@ -529,10 +516,7 @@ fn send_error(
     client: &mut EspWebSocketClient<'_>,
     message: impl Into<String>,
 ) -> core::result::Result<(), String> {
-    let json = serde_json::to_string(&ServerMessage::Error {
-        message: message.into(),
-    })
-    .unwrap();
+    let json = server::error_json(message);
     send_text(client, &json)
 }
 
@@ -548,12 +532,7 @@ fn send_initial_state(
     settings: &DeviceSettings,
     client: &mut EspWebSocketClient<'_>,
 ) -> core::result::Result<(), String> {
-    ctx.set_remote_control_status(status_from_settings(
-        settings,
-        true,
-        None,
-        "Connected",
-    ));
+    ctx.set_remote_control_status(status_from_settings(settings, true, None, "Connected"));
     ctx.record_event(
         EventSource::System,
         EventLogEntryKind::RemoteControlConnection {
@@ -563,9 +542,10 @@ fn send_initial_state(
         },
     );
 
-    send_text(client, &ctx.remote_control_status_json())?;
-    send_text(client, &ctx.state_json())?;
-    send_text(client, &ctx.event_log_state_json())
+    for json in ctx.remote_sync_jsons() {
+        send_text(client, &json)?;
+    }
+    Ok(())
 }
 
 fn status_from_settings(

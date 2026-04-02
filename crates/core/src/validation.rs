@@ -146,7 +146,8 @@ pub fn validate_preset_and_schedule_events(
         }
     }
 
-    let events = scheduling::schedule_preset_events(preset, collars, &mut scheduling::MidpointResolver)?;
+    let events =
+        scheduling::schedule_preset_events(preset, collars, &mut scheduling::MidpointResolver)?;
 
     if runnable_steps == 0 {
         return Err(anyhow!(
@@ -279,7 +280,9 @@ mod tests {
 
         let events = validate_preset_and_schedule_events(&p, &collars).unwrap();
         assert!(!events.is_empty());
-        let expected = scheduling::schedule_preset_events(&p, &collars, &mut scheduling::MidpointResolver).unwrap();
+        let expected =
+            scheduling::schedule_preset_events(&p, &collars, &mut scheduling::MidpointResolver)
+                .unwrap();
         let actual_fields: Vec<(u64, u16, u8, u8, u8)> = events
             .iter()
             .map(|event| {
