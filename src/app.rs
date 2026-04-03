@@ -11,7 +11,7 @@ use crate::build_info::APP_VERSION;
 use crate::led::Led;
 use crate::net::{self, NetworkHandle};
 use crate::remote_control::{self, RemoteControlHandle};
-use crate::repository::{CollarRepository, PresetRepository, SettingsRepository, SharedRepository};
+use crate::repository::{RepositoryServices, SharedRepository};
 use crate::rf::{RfReceiver, RfTransmitter};
 use crate::server::{self, AppCtx, AppWorkerHandle, TransmissionWorkerHandle};
 use crate::storage::Storage;
@@ -59,9 +59,11 @@ impl ApplicationBuilder {
 
         register_eventfd()?;
 
-        let mut storage = Storage::new(nvs_partition.clone())?;
-        let mut device_settings = SettingsRepository::load_settings(&mut storage)?;
-        SettingsRepository::ensure_device_id(&mut storage, &mut device_settings)?;
+        let repository: SharedRepository =
+            Arc::new(Mutex::new(Box::new(Storage::new(nvs_partition.clone())?)));
+        let repository_services = RepositoryServices::new(repository);
+        let mut device_settings = repository_services.load_settings()?;
+        repository_services.ensure_device_id(&mut device_settings)?;
 
         #[cfg(all(esp32p4, has_wifi))]
         {
@@ -136,15 +138,13 @@ impl ApplicationBuilder {
         let tx_led = Arc::new(Mutex::new(Led::new(tx_led_pin)?));
         let rx_led = Arc::new(Mutex::new(Led::new(rx_led_pin)?));
 
-        let collars = CollarRepository::load_collars(&mut storage)?;
-        let presets = PresetRepository::load_presets(&mut storage)?;
+        let collars = repository_services.load_collars()?;
+        let presets = repository_services.load_presets()?;
         info!(
             "Loaded {} collars and {} presets",
             collars.len(),
             presets.len()
         );
-
-        let repository: SharedRepository = Arc::new(Mutex::new(Box::new(storage)));
 
         let (mut broadcast_tx, initial_rx) = async_broadcast::broadcast(16);
         broadcast_tx.set_overflow(true);
@@ -158,7 +158,7 @@ impl ApplicationBuilder {
             broadcast_keepalive,
             rf_rx,
             device_settings,
-            repository,
+            repository_services,
             collars,
             presets,
         );

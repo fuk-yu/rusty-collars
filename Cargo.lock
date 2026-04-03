@@ -1574,12 +1574,24 @@ dependencies = [
  "log",
  "picoserve",
  "rand",
+ "rusty-collars-app",
  "rusty-collars-core",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
  "url",
  "uuid",
+]
+
+[[package]]
+name = "rusty-collars-app"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "rusty-collars-core",
+ "serde_json",
+ "thiserror 2.0.18",
+ "url",
 ]
 
 [[package]]

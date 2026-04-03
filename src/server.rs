@@ -7,7 +7,7 @@ use rand::Rng;
 
 use crate::error::ControlError;
 use crate::led::Led;
-use crate::protocol::{CommandMode, DeviceSettings, Distribution, EventSource};
+use crate::protocol::{CommandMode, Distribution, EventSource};
 use crate::rf::RfTransmitter;
 
 mod admin;
@@ -21,10 +21,7 @@ mod status;
 mod ws;
 
 const HAS_WIFI: bool = cfg!(has_wifi);
-const MAX_EVENT_LOG_ENTRIES: usize = 100;
-const MAX_RF_DEBUG_EVENTS: usize = 100;
 const RF_DEBUG_DISABLED_SLEEP_MS: u64 = 100;
-const RF_STOP_LOCKOUT_MS: u64 = 10_000;
 const VALID_UNIX_TIME_THRESHOLD_MS: u64 = 946_684_800_000;
 
 pub use context::{AppCtx, ConnectionState};
@@ -131,35 +128,6 @@ fn event_source(origin: MessageOrigin) -> EventSource {
     match origin {
         MessageOrigin::LocalUi => EventSource::LocalUi,
         MessageOrigin::RemoteControl => EventSource::RemoteControl,
-    }
-}
-
-fn device_settings_reboot_required(previous: &DeviceSettings, next: &DeviceSettings) -> bool {
-    previous.tx_led_pin != next.tx_led_pin
-        || previous.rx_led_pin != next.rx_led_pin
-        || previous.rf_tx_pin != next.rf_tx_pin
-        || previous.rf_rx_pin != next.rf_rx_pin
-        || previous.wifi_client_enabled != next.wifi_client_enabled
-        || previous.wifi_ssid != next.wifi_ssid
-        || previous.wifi_password != next.wifi_password
-        || previous.ap_enabled != next.ap_enabled
-        || previous.ap_password != next.ap_password
-        || previous.max_clients != next.max_clients
-        || previous.ntp_enabled != next.ntp_enabled
-        || previous.ntp_server != next.ntp_server
-}
-
-fn stop_all_transmissions(domain: &mut DomainState) {
-    domain.preset_name = None;
-    domain.rf_lockout_until_ms = now_millis() + RF_STOP_LOCKOUT_MS;
-}
-
-fn stop_active_preset(domain: &mut DomainState) -> bool {
-    if domain.preset_name.is_some() {
-        domain.preset_name = None;
-        true
-    } else {
-        false
     }
 }
 

@@ -4,6 +4,7 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::time::Instant;
 
 use async_broadcast::{InactiveReceiver, Sender as BroadcastSender};
+pub(crate) use rusty_collars_app::DomainState;
 
 use crate::led::Led;
 use crate::protocol::{
@@ -218,17 +219,6 @@ pub(crate) enum AppCommand {
     CompletePreset {
         preset_name: String,
     },
-}
-
-pub struct DomainState {
-    pub device_settings: DeviceSettings,
-    pub collars: Vec<Collar>,
-    pub presets: Vec<Preset>,
-    pub preset_name: Option<String>,
-    pub rf_lockout_until_ms: u64,
-    pub rf_debug_events: VecDeque<RfDebugFrame>,
-    pub event_log_events: Vec<EventLogEntry>,
-    pub remote_control_status: RemoteControlStatus,
 }
 
 #[derive(Clone)]

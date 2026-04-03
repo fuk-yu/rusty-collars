@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/core"]
+members = ["crates/app", "crates/core"]
 
 [patch.crates-io]
 esp-idf-svc = { path = "vendor/esp-idf-svc" }
@@ -14,6 +14,7 @@ license = "MIT"
 p4-wifi = []
 
 [dependencies]
+rusty-collars-app = { path = "crates/app" }
 rusty-collars-core = { path = "crates/core" }
 esp-idf-svc = "0.52"
 embedded-svc = "0.29"

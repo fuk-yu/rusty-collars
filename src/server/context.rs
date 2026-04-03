@@ -9,7 +9,7 @@ use crate::led::Led;
 use crate::protocol::{
     Collar, DeviceSettings, EventLogEntryKind, EventSource, ExportData, Preset, RemoteControlStatus,
 };
-use crate::repository::SharedRepository;
+use crate::repository::RepositoryServices;
 use crate::rf::{RfReceiver, RfTransmitter};
 
 use super::status;
@@ -21,7 +21,7 @@ use super::{
 #[derive(Clone)]
 pub struct AppCtx {
     domain: Arc<Mutex<DomainState>>,
-    repository: SharedRepository,
+    repository_services: RepositoryServices,
     hardware: HardwareCtx,
     sessions: SessionCtx,
     worker: WorkerCtx,
@@ -44,7 +44,7 @@ impl AppCtx {
         broadcast_keepalive: InactiveReceiver<AppEvent>,
         rf_receiver: RfReceiver,
         device_settings: DeviceSettings,
-        repository: SharedRepository,
+        repository_services: RepositoryServices,
         collars: Vec<Collar>,
         presets: Vec<Preset>,
     ) -> Self {
@@ -62,7 +62,7 @@ impl AppCtx {
                 event_log_events: Vec::new(),
                 remote_control_status,
             })),
-            repository,
+            repository_services,
             hardware: HardwareCtx {
                 rf,
                 tx_led,
@@ -177,6 +177,10 @@ impl AppCtx {
                 .fetch_add(1, Ordering::SeqCst)
                 + 1,
         )
+    }
+
+    pub(crate) fn repository_services(&self) -> &RepositoryServices {
+        &self.repository_services
     }
 
     pub(crate) fn max_clients(&self) -> u32 {
@@ -457,26 +461,6 @@ impl AppCtx {
 
     pub(crate) fn record_event(&self, source: EventSource, kind: EventLogEntryKind) {
         self.send_app_command(AppCommand::RecordEvent { source, kind });
-    }
-
-    pub(crate) fn persist_collars(&self, collars: &[Collar]) {
-        if let Err(err) = self.repository.lock().unwrap().save_collars(collars) {
-            log::error!("NVS save_collars failed: {err:#}");
-        }
-    }
-
-    pub(crate) fn persist_presets(&self, presets: &[Preset]) {
-        if let Err(err) = self.repository.lock().unwrap().save_presets(presets) {
-            log::error!("NVS save_presets failed: {err:#}");
-        }
-    }
-
-    pub(crate) fn persist_settings(&self, settings: &DeviceSettings) -> anyhow::Result<()> {
-        self.repository
-            .lock()
-            .unwrap()
-            .save_settings(settings)
-            .map_err(Into::into)
     }
 
     pub(crate) fn push_rf_debug_event(&self, event: crate::protocol::RfDebugFrame) {
