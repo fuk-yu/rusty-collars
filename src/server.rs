@@ -10,8 +10,10 @@ use crate::led::Led;
 use crate::protocol::{CommandMode, DeviceSettings, Distribution, EventSource};
 use crate::rf::RfTransmitter;
 
+mod admin;
 mod context;
 mod control;
+mod debug;
 mod http;
 mod runtime;
 mod state;
@@ -29,10 +31,13 @@ pub use context::{AppCtx, ConnectionState};
 pub(crate) use control::{
     cancel_owned_manual_actions, local_ui_dispatcher, pong_json, remote_control_dispatcher,
 };
-pub use runtime::{run_server, start_transmission_worker, TransmissionWorkerHandle};
+pub use runtime::{
+    run_server, start_app_worker, start_transmission_worker, AppWorkerHandle,
+    TransmissionWorkerHandle,
+};
 pub(crate) use state::{
-    ActionKey, ActionOwner, ActiveActionHandle, BroadcastMsg, DebugCtx, DomainState, HardwareCtx,
-    MessageOrigin, RemoteControlUrlKind, SessionCtx, TransmissionCommand, WorkerCtx,
+    ActionKey, ActionOwner, ActiveActionHandle, AppCommand, BroadcastMsg, DebugCtx, DomainState,
+    HardwareCtx, MessageOrigin, RemoteControlUrlKind, SessionCtx, TransmissionCommand, WorkerCtx,
 };
 pub(crate) use status::{
     parse_remote_control_url, remote_control_endpoint_url, remote_control_status,

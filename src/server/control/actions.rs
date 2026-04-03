@@ -3,13 +3,13 @@ use std::time::{Duration, Instant};
 use log::{error, info};
 
 use crate::error::ControlError;
-use crate::protocol::{ButtonAction, CommandMode, Distribution, EventLogEntryKind, MAX_INTENSITY};
+use crate::protocol::{ButtonAction, CommandMode, Distribution, MAX_INTENSITY};
 use crate::{scheduling, validation};
 
 use super::super::{
     command_intensity, event_source, resolve_random_duration, resolve_random_u8,
-    rf_lockout_remaining_ms, rf_send_with_led, stop_all_transmissions, ActionKey, ActionOwner,
-    ActiveActionHandle, AppCtx, ControlResult, RandomResolver,
+    rf_lockout_remaining_ms, rf_send_with_led, ActionKey, ActionOwner, ActiveActionHandle, AppCtx,
+    ControlResult, RandomResolver,
 };
 use super::ControlDispatcher;
 
@@ -109,7 +109,7 @@ pub(super) fn stop_action(ctx: &AppCtx, collar_name: String, mode: CommandMode) 
 pub(super) fn run_preset(dispatcher: &ControlDispatcher<'_>, name: String) -> ControlResult {
     let source = event_source(dispatcher.origin);
     let (preset_name, resolved_preset_for_log, events) = {
-        let mut domain = dispatcher.ctx.domain.lock().unwrap();
+        let domain = dispatcher.ctx.domain.lock().unwrap();
         if rf_lockout_remaining_ms(&domain) > 0 {
             return Err(ControlError::TransmissionLockout);
         }
@@ -140,53 +140,24 @@ pub(super) fn run_preset(dispatcher: &ControlDispatcher<'_>, name: String) -> Co
         .map_err(|err| ControlError::Validation(err.to_string()))?;
         let resolved_for_log = has_random.then_some(resolved);
 
-        domain.preset_name = Some(name.clone());
-
         (preset.name.clone(), resolved_for_log, events)
     };
 
     dispatcher
         .ctx
-        .start_preset_execution(preset_name.clone(), events);
-    dispatcher.ctx.record_event(
-        source,
-        EventLogEntryKind::PresetRun {
-            preset_name: preset_name.clone(),
-            resolved_preset: resolved_preset_for_log,
-        },
-    );
-    dispatcher.ctx.broadcast_state();
-    Ok(Vec::new())
+        .start_preset_run(preset_name, source, resolved_preset_for_log, events)
 }
 
 pub(super) fn stop_preset(ctx: &AppCtx) -> ControlResult {
-    let stopped = {
-        let mut domain = ctx.domain.lock().unwrap();
-        super::super::stop_active_preset(&mut domain)
-    };
-    if stopped {
-        ctx.stop_preset_execution();
-    }
-    ctx.broadcast_state();
-    Ok(Vec::new())
+    ctx.stop_preset_run()
 }
 
 pub(super) fn stop_all(ctx: &AppCtx) -> ControlResult {
-    {
-        let mut domain = ctx.domain.lock().unwrap();
-        stop_all_transmissions(&mut domain);
-    }
-    ctx.stop_all_execution();
-    ctx.broadcast_state();
-    Ok(Vec::new())
+    ctx.stop_all_run()
 }
 
 pub(super) fn cancel_owned_manual_actions(ctx: &AppCtx, owner: ActionOwner) {
     ctx.cancel_owned_manual_actions(owner);
-}
-
-pub(super) fn cancel_all_manual_actions(ctx: &AppCtx) {
-    ctx.cancel_all_manual_actions();
 }
 
 fn resolve_collar_command(

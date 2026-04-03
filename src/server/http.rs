@@ -5,8 +5,6 @@ use log::{error, info};
 use picoserve::response::ws;
 use picoserve::routing::{get, get_service, post_service};
 
-use crate::ota;
-
 use super::ConnectionState;
 
 const FRONTEND_HTML_GZ: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/frontend.html.gz"));
@@ -119,18 +117,13 @@ impl picoserve::routing::RequestHandlerService<ConnectionState> for OtaService {
                     .with_different_timeout_signal(Box::pin(async_io::Timer::after(
                         Duration::from_secs(120),
                     )));
-            ota::perform_update(content_length, &mut reader).await
+            super::admin::perform_ota_update(content_length, &mut reader).await
         };
 
         let connection = request.body_connection.finalize().await?;
         match result {
             Ok(written) => {
-                std::thread::spawn(|| {
-                    std::thread::sleep(Duration::from_millis(500));
-                    unsafe {
-                        esp_idf_svc::sys::esp_restart();
-                    }
-                });
+                super::admin::schedule_reboot(Duration::from_millis(500));
                 response_writer
                     .write_response(
                         connection,

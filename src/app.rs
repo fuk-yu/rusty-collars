@@ -13,7 +13,7 @@ use crate::net::{self, NetworkHandle};
 use crate::remote_control::{self, RemoteControlHandle};
 use crate::repository::{CollarRepository, PresetRepository, SettingsRepository, SharedRepository};
 use crate::rf::{RfReceiver, RfTransmitter};
-use crate::server::{self, AppCtx, TransmissionWorkerHandle};
+use crate::server::{self, AppCtx, AppWorkerHandle, TransmissionWorkerHandle};
 use crate::storage::Storage;
 use crate::time_sync::{self, TimeSyncHandle};
 
@@ -28,6 +28,7 @@ pub struct Application {
 pub struct RunningApplication {
     network: NetworkHandle,
     _ctx: AppCtx,
+    _app_worker: AppWorkerHandle,
     _time_sync: Option<TimeSyncHandle>,
     _remote_control: Option<RemoteControlHandle>,
     _transmission_worker: TransmissionWorkerHandle,
@@ -177,6 +178,7 @@ impl Application {
             background_services_enabled,
         } = self;
 
+        let app_worker = server::start_app_worker(ctx.clone());
         let time_sync = if background_services_enabled {
             let time_sync_settings = ctx.domain.lock().unwrap().device_settings.clone();
             let time_sync_ctx = ctx.clone();
@@ -213,6 +215,7 @@ impl Application {
         Ok(RunningApplication {
             network,
             _ctx: ctx,
+            _app_worker: app_worker,
             _time_sync: time_sync,
             _remote_control: remote_control,
             _transmission_worker: transmission_worker,

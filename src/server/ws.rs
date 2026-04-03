@@ -1,4 +1,3 @@
-use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use log::{info, warn};
@@ -77,15 +76,7 @@ impl ws::WebSocketCallbackWithState<ConnectionState> for WsHandler {
             }
         }
 
-        if listening_rf_debug {
-            let previous = ctx
-                .debug
-                .rf_debug_listener_count
-                .fetch_sub(1, Ordering::SeqCst);
-            if previous <= 1 {
-                ctx.debug.rf_debug_enabled.store(false, Ordering::SeqCst);
-            }
-        }
+        super::debug::release_rf_debug_listener(ctx, listening_rf_debug);
         cancel_owned_manual_actions(ctx, ActionOwner::LocalWs(ws_id));
         ctx.sessions
             .ws_clients
@@ -116,41 +107,23 @@ async fn handle_text_message<W: picoserve::io::Write>(
 
     match msg {
         ClientMessage::StartRfDebug => {
+            let json = super::debug::start_rf_debug_listener(ctx, *listening_rf_debug);
             *listening_rf_debug = true;
-            ctx.debug
-                .rf_debug_listener_count
-                .fetch_add(1, Ordering::SeqCst);
-            ctx.debug.rf_debug_enabled.store(true, Ordering::SeqCst);
-            super::runtime::ensure_rf_debug_worker(ctx);
-            let json = ctx.rf_debug_state_json(true);
             tx.send_text(&json).await?;
         }
         ClientMessage::StopRfDebug => {
-            if *listening_rf_debug {
-                *listening_rf_debug = false;
-                let previous = ctx
-                    .debug
-                    .rf_debug_listener_count
-                    .fetch_sub(1, Ordering::SeqCst);
-                if previous <= 1 {
-                    ctx.debug.rf_debug_enabled.store(false, Ordering::SeqCst);
-                }
-            }
-            let json = ctx.rf_debug_state_json(false);
+            let json = super::debug::stop_rf_debug_listener(ctx, *listening_rf_debug);
+            *listening_rf_debug = false;
             tx.send_text(&json).await?;
         }
         ClientMessage::ClearRfDebug => {
-            ctx.domain.lock().unwrap().rf_debug_events.clear();
-            let json = ctx.rf_debug_state_json(*listening_rf_debug);
+            let json = super::debug::clear_rf_debug_events(ctx, *listening_rf_debug);
             tx.send_text(&json).await?;
         }
         ClientMessage::Reboot => {
             info!("Reboot requested via WebSocket");
             tx.send_text(r#"{"type":"state","rebooting":true}"#).await?;
-            async_io::Timer::after(Duration::from_millis(200)).await;
-            unsafe {
-                esp_idf_svc::sys::esp_restart();
-            }
+            super::admin::schedule_reboot(Duration::from_millis(200));
         }
         msg => match local_ui_dispatcher(ctx, owner).handle(msg) {
             Ok(messages) => {

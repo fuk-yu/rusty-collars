@@ -1,10 +1,8 @@
-use std::sync::atomic::Ordering;
-
-use log::{error, info};
+use log::info;
 
 use crate::error::ControlError;
 use crate::protocol::{DeviceSettings, ServerMessage};
-use crate::server::{device_settings_reboot_required, ControlResult, HAS_WIFI};
+use crate::server::{ControlResult, HAS_WIFI};
 
 use super::{ensure_local_ui, json_message, ControlDispatcher};
 
@@ -64,53 +62,5 @@ pub(super) fn save_device_settings(
     }
 
     info!("Saving device settings...");
-    let settings_to_save = settings.clone();
-    let (reboot_required, remote_settings_changed, event_log_changed) = {
-        let mut domain = dispatcher.ctx.domain.lock().unwrap();
-        let previous_settings = domain.device_settings.clone();
-        let reboot_required = device_settings_reboot_required(&previous_settings, &settings);
-        let remote_settings_changed = previous_settings.remote_control_enabled
-            != settings.remote_control_enabled
-            || previous_settings.remote_control_url != settings.remote_control_url
-            || previous_settings.remote_control_validate_cert
-                != settings.remote_control_validate_cert;
-        let event_log_changed = previous_settings.record_event_log != settings.record_event_log;
-
-        domain.device_settings = settings;
-        if remote_settings_changed {
-            domain.remote_control_status =
-                super::super::status::remote_control_status_from_settings(&domain.device_settings);
-        }
-        if !domain.device_settings.record_event_log {
-            domain.event_log_events.clear();
-        }
-
-        (reboot_required, remote_settings_changed, event_log_changed)
-    };
-
-    if remote_settings_changed {
-        dispatcher
-            .ctx
-            .sessions
-            .remote_control_settings_revision
-            .fetch_add(1, Ordering::SeqCst);
-    }
-
-    match dispatcher.ctx.persist_settings(&settings_to_save) {
-        Ok(()) => info!("Device settings saved to NVS"),
-        Err(err) => error!("NVS save_settings failed: {err:#}"),
-    }
-
-    if remote_settings_changed {
-        dispatcher.ctx.broadcast_remote_control_status();
-    }
-    if event_log_changed {
-        dispatcher.ctx.broadcast_event_log_state();
-    }
-
-    json_message(&ServerMessage::DeviceSettings {
-        settings: settings_to_save,
-        reboot_required,
-        has_wifi: HAS_WIFI,
-    })
+    dispatcher.ctx.save_device_settings(settings)
 }

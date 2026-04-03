@@ -7,8 +7,8 @@ use async_broadcast::{InactiveReceiver, Sender as BroadcastSender};
 
 use crate::led::Led;
 use crate::protocol::{
-    Collar, CommandMode, DeviceSettings, EventLogEntry, EventSource, Preset, RemoteControlStatus,
-    RfDebugFrame,
+    Collar, CommandMode, DeviceSettings, EventLogEntry, EventLogEntryKind, EventSource, ExportData,
+    Preset, RemoteControlStatus, RfDebugFrame,
 };
 use crate::rf::{RfReceiver, RfTransmitter};
 
@@ -74,6 +74,73 @@ pub(crate) enum TransmissionCommand {
     StopAll,
 }
 
+pub(crate) enum AppCommand {
+    AddCollar {
+        collar: Collar,
+        reply: mpsc::SyncSender<super::ControlResult>,
+    },
+    UpdateCollar {
+        original_name: String,
+        updated: Collar,
+        reply: mpsc::SyncSender<super::ControlResult>,
+    },
+    DeleteCollar {
+        name: String,
+        reply: mpsc::SyncSender<super::ControlResult>,
+    },
+    SavePreset {
+        original_name: Option<String>,
+        preset: Preset,
+        reply: mpsc::SyncSender<super::ControlResult>,
+    },
+    DeletePreset {
+        name: String,
+        reply: mpsc::SyncSender<super::ControlResult>,
+    },
+    ReorderPresets {
+        names: Vec<String>,
+        reply: mpsc::SyncSender<super::ControlResult>,
+    },
+    ImportData {
+        data: ExportData,
+        reply: mpsc::SyncSender<super::ControlResult>,
+    },
+    SaveDeviceSettings {
+        settings: DeviceSettings,
+        reply: mpsc::SyncSender<super::ControlResult>,
+    },
+    StartPresetExecution {
+        preset_name: String,
+        source: EventSource,
+        resolved_preset: Option<Preset>,
+        events: Vec<crate::scheduling::PresetEvent>,
+        reply: mpsc::SyncSender<super::ControlResult>,
+    },
+    StopPreset {
+        reply: mpsc::SyncSender<super::ControlResult>,
+    },
+    StopAll {
+        reply: mpsc::SyncSender<super::ControlResult>,
+    },
+    SetRemoteControlStatus {
+        status: RemoteControlStatus,
+    },
+    RecordEvent {
+        source: EventSource,
+        kind: EventLogEntryKind,
+    },
+    PushRfDebugEvent {
+        event: RfDebugFrame,
+    },
+    ClearRfDebugEvents {
+        listening: bool,
+        reply: mpsc::SyncSender<Arc<str>>,
+    },
+    CompletePreset {
+        preset_name: String,
+    },
+}
+
 pub struct DomainState {
     pub device_settings: DeviceSettings,
     pub collars: Vec<Collar>,
@@ -104,6 +171,8 @@ pub struct SessionCtx {
 
 #[derive(Clone)]
 pub struct WorkerCtx {
+    pub app_tx: mpsc::Sender<AppCommand>,
+    pub app_rx: Arc<Mutex<Option<mpsc::Receiver<AppCommand>>>>,
     pub transmission_tx: mpsc::Sender<TransmissionCommand>,
     pub transmission_rx: Arc<Mutex<Option<mpsc::Receiver<TransmissionCommand>>>>,
     pub rng: Arc<Mutex<rand::rngs::SmallRng>>,
