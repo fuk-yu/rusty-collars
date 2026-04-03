@@ -19,7 +19,7 @@ pub(super) fn delete(ctx: &AppCtx, name: String) -> ControlResult {
 
 pub(super) fn preview(ctx: &AppCtx, nonce: u32, mut preset: Preset) -> ControlResult {
     preset.normalize();
-    let collars = ctx.domain.lock().unwrap().collars.clone();
+    let collars = ctx.collars_snapshot();
     let (preview, error) = match validation::validate_preset(&preset, &collars)
         .and_then(|()| scheduling::preview_preset(&preset, &collars))
     {

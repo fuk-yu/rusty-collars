@@ -8,12 +8,7 @@ use super::{ensure_local_ui, json_message, ControlDispatcher};
 pub(super) fn export(dispatcher: &ControlDispatcher<'_>) -> ControlResult {
     ensure_local_ui(dispatcher.origin, "export")?;
 
-    let domain = dispatcher.ctx.domain.lock().unwrap();
-    let mut data = ExportData {
-        collars: domain.collars.clone(),
-        presets: domain.presets.clone(),
-    };
-    drop(domain);
+    let mut data = dispatcher.ctx.export_data_snapshot();
     data.presets.iter_mut().for_each(Preset::normalize);
     json_message(&ServerMessage::ExportData { data: &data })
 }

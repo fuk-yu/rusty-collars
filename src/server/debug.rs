@@ -1,13 +1,9 @@
-use std::sync::atomic::Ordering;
-
 use super::{AppCtx, AppEvent};
 
 pub(super) fn start_rf_debug_listener(ctx: &AppCtx, was_listening: bool) -> AppEvent {
     if !was_listening {
-        ctx.debug
-            .rf_debug_listener_count
-            .fetch_add(1, Ordering::SeqCst);
-        ctx.debug.rf_debug_enabled.store(true, Ordering::SeqCst);
+        ctx.increment_rf_debug_listener_count();
+        ctx.set_rf_debug_enabled(true);
         super::runtime::ensure_rf_debug_worker(ctx);
     }
 
@@ -28,11 +24,7 @@ pub(super) fn release_rf_debug_listener(ctx: &AppCtx, was_listening: bool) {
         return;
     }
 
-    let previous = ctx
-        .debug
-        .rf_debug_listener_count
-        .fetch_sub(1, Ordering::SeqCst);
-    if previous <= 1 {
-        ctx.debug.rf_debug_enabled.store(false, Ordering::SeqCst);
+    if ctx.release_rf_debug_listener() {
+        ctx.set_rf_debug_enabled(false);
     }
 }

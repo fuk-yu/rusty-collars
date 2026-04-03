@@ -19,10 +19,9 @@ use crate::validation;
 use rusty_collars_core::rf_timing::RF_COMMAND_TRANSMIT_DURATION_US;
 
 use super::{
-    current_unix_ms, device_settings_reboot_required, free_heap, now_millis, rf_send_with_led,
-    stop_active_preset, stop_all_transmissions, ActionKey, ActiveActionHandle, AppCommand, AppCtx,
-    AppEvent, ControlResult, TransmissionCommand, HAS_WIFI, MAX_EVENT_LOG_ENTRIES,
-    MAX_RF_DEBUG_EVENTS,
+    current_unix_ms, device_settings_reboot_required, free_heap, now_millis, stop_active_preset,
+    stop_all_transmissions, ActionKey, ActiveActionHandle, AppCommand, AppCtx, AppEvent,
+    ControlResult, TransmissionCommand, HAS_WIFI, MAX_EVENT_LOG_ENTRIES, MAX_RF_DEBUG_EVENTS,
 };
 
 const HTTP_BUF_SIZE: usize = 1024;
@@ -143,8 +142,7 @@ fn send_reply<T>(reply: SyncSender<T>, value: T) {
 }
 
 fn handle_add_collar(ctx: &AppCtx, collar: Collar) -> ControlResult {
-    let collars = {
-        let mut domain = ctx.domain.lock().unwrap();
+    let collars = ctx.with_domain_mut(|domain| {
         validation::validate_collar(&collar)
             .map_err(|err| ControlError::Validation(err.to_string()))?;
         if domain
@@ -155,8 +153,8 @@ fn handle_add_collar(ctx: &AppCtx, collar: Collar) -> ControlResult {
             return Err(ControlError::DuplicateCollar(collar.name.clone()));
         }
         domain.collars.push(collar);
-        domain.collars.clone()
-    };
+        Ok(domain.collars.clone())
+    })?;
 
     ctx.persist_collars(&collars);
     ctx.broadcast_state();
@@ -164,8 +162,7 @@ fn handle_add_collar(ctx: &AppCtx, collar: Collar) -> ControlResult {
 }
 
 fn handle_update_collar(ctx: &AppCtx, original_name: String, updated: Collar) -> ControlResult {
-    let (collars, presets, preset_stopped) = {
-        let mut domain = ctx.domain.lock().unwrap();
+    let (collars, presets, preset_stopped) = ctx.with_domain_mut(|domain| {
         let Some(index) = domain
             .collars
             .iter()
@@ -195,13 +192,13 @@ fn handle_update_collar(ctx: &AppCtx, original_name: String, updated: Collar) ->
             }
         }
 
-        let preset_stopped = stop_active_preset(&mut domain);
-        (
+        let preset_stopped = stop_active_preset(domain);
+        Ok((
             domain.collars.clone(),
             domain.presets.clone(),
             preset_stopped,
-        )
-    };
+        ))
+    })?;
 
     if preset_stopped {
         ctx.stop_preset_execution();
@@ -214,8 +211,7 @@ fn handle_update_collar(ctx: &AppCtx, original_name: String, updated: Collar) ->
 }
 
 fn handle_delete_collar(ctx: &AppCtx, name: String) -> ControlResult {
-    let (collars, preset_stopped) = {
-        let mut domain = ctx.domain.lock().unwrap();
+    let (collars, preset_stopped) = ctx.with_domain_mut(|domain| {
         if domain
             .presets
             .iter()
@@ -228,9 +224,9 @@ fn handle_delete_collar(ctx: &AppCtx, name: String) -> ControlResult {
         if domain.collars.len() == before {
             return Err(ControlError::UnknownCollar(name));
         }
-        let preset_stopped = stop_active_preset(&mut domain);
-        (domain.collars.clone(), preset_stopped)
-    };
+        let preset_stopped = stop_active_preset(domain);
+        Ok((domain.collars.clone(), preset_stopped))
+    })?;
 
     if preset_stopped {
         ctx.stop_preset_execution();
@@ -246,8 +242,7 @@ fn handle_save_preset(
     original_name: Option<String>,
     preset: Preset,
 ) -> ControlResult {
-    let (presets, preset_stopped) = {
-        let mut domain = ctx.domain.lock().unwrap();
+    let (presets, preset_stopped) = ctx.with_domain_mut(|domain| {
         validation::validate_preset(&preset, &domain.collars)
             .map_err(|err| ControlError::Validation(err.to_string()))?;
         let original_name = original_name
@@ -282,10 +277,10 @@ fn handle_save_preset(
         }
         validation::validate_presets(&updated, &domain.collars)
             .map_err(|err| ControlError::Validation(err.to_string()))?;
-        let preset_stopped = stop_active_preset(&mut domain);
+        let preset_stopped = stop_active_preset(domain);
         domain.presets = updated;
-        (domain.presets.clone(), preset_stopped)
-    };
+        Ok((domain.presets.clone(), preset_stopped))
+    })?;
 
     if preset_stopped {
         ctx.stop_preset_execution();
@@ -296,16 +291,15 @@ fn handle_save_preset(
 }
 
 fn handle_delete_preset(ctx: &AppCtx, name: String) -> ControlResult {
-    let (presets, preset_stopped) = {
-        let mut domain = ctx.domain.lock().unwrap();
+    let (presets, preset_stopped) = ctx.with_domain_mut(|domain| {
         let before = domain.presets.len();
         domain.presets.retain(|preset| preset.name != name);
         if domain.presets.len() == before {
             return Err(ControlError::UnknownPreset(name));
         }
-        let preset_stopped = stop_active_preset(&mut domain);
-        (domain.presets.clone(), preset_stopped)
-    };
+        let preset_stopped = stop_active_preset(domain);
+        Ok((domain.presets.clone(), preset_stopped))
+    })?;
 
     if preset_stopped {
         ctx.stop_preset_execution();
@@ -316,8 +310,7 @@ fn handle_delete_preset(ctx: &AppCtx, name: String) -> ControlResult {
 }
 
 fn handle_reorder_presets(ctx: &AppCtx, names: Vec<String>) -> ControlResult {
-    let presets = {
-        let mut domain = ctx.domain.lock().unwrap();
+    let presets = ctx.with_domain_mut(|domain| {
         let order_by_name: HashMap<&str, usize> = names
             .iter()
             .enumerate()
@@ -338,7 +331,7 @@ fn handle_reorder_presets(ctx: &AppCtx, names: Vec<String>) -> ControlResult {
         reordered.extend(remaining);
         domain.presets = reordered;
         domain.presets.clone()
-    };
+    });
 
     ctx.persist_presets(&presets);
     ctx.broadcast_state();
@@ -346,9 +339,8 @@ fn handle_reorder_presets(ctx: &AppCtx, names: Vec<String>) -> ControlResult {
 }
 
 fn handle_import_data(ctx: &AppCtx, data: ExportData) -> ControlResult {
-    let (collars, presets, preset_stopped) = {
-        let mut domain = ctx.domain.lock().unwrap();
-        let preset_stopped = stop_active_preset(&mut domain);
+    let (collars, presets, preset_stopped) = ctx.with_domain_mut(|domain| {
+        let preset_stopped = stop_active_preset(domain);
         domain.collars = data.collars;
         domain.presets = data.presets;
         (
@@ -356,7 +348,7 @@ fn handle_import_data(ctx: &AppCtx, data: ExportData) -> ControlResult {
             domain.presets.clone(),
             preset_stopped,
         )
-    };
+    });
 
     if preset_stopped {
         ctx.stop_preset_execution();
@@ -370,33 +362,31 @@ fn handle_import_data(ctx: &AppCtx, data: ExportData) -> ControlResult {
 
 fn handle_save_device_settings(ctx: &AppCtx, settings: DeviceSettings) -> ControlResult {
     let settings_to_save = settings.clone();
-    let (reboot_required, remote_settings_changed, event_log_changed) = {
-        let mut domain = ctx.domain.lock().unwrap();
-        let previous_settings = domain.device_settings.clone();
-        let reboot_required = device_settings_reboot_required(&previous_settings, &settings);
-        let remote_settings_changed = previous_settings.remote_control_enabled
-            != settings.remote_control_enabled
-            || previous_settings.remote_control_url != settings.remote_control_url
-            || previous_settings.remote_control_validate_cert
-                != settings.remote_control_validate_cert;
-        let event_log_changed = previous_settings.record_event_log != settings.record_event_log;
+    let (reboot_required, remote_settings_changed, event_log_changed) =
+        ctx.with_domain_mut(|domain| {
+            let previous_settings = domain.device_settings.clone();
+            let reboot_required = device_settings_reboot_required(&previous_settings, &settings);
+            let remote_settings_changed = previous_settings.remote_control_enabled
+                != settings.remote_control_enabled
+                || previous_settings.remote_control_url != settings.remote_control_url
+                || previous_settings.remote_control_validate_cert
+                    != settings.remote_control_validate_cert;
+            let event_log_changed = previous_settings.record_event_log != settings.record_event_log;
 
-        domain.device_settings = settings;
-        if remote_settings_changed {
-            domain.remote_control_status =
-                super::status::remote_control_status_from_settings(&domain.device_settings);
-        }
-        if !domain.device_settings.record_event_log {
-            domain.event_log_events.clear();
-        }
+            domain.device_settings = settings;
+            if remote_settings_changed {
+                domain.remote_control_status =
+                    super::status::remote_control_status_from_settings(&domain.device_settings);
+            }
+            if !domain.device_settings.record_event_log {
+                domain.event_log_events.clear();
+            }
 
-        (reboot_required, remote_settings_changed, event_log_changed)
-    };
+            (reboot_required, remote_settings_changed, event_log_changed)
+        });
 
     if remote_settings_changed {
-        ctx.sessions
-            .remote_control_settings_revision
-            .fetch_add(1, Ordering::SeqCst);
+        ctx.bump_remote_control_settings_revision();
     }
 
     match ctx.persist_settings(&settings_to_save) {
@@ -425,10 +415,9 @@ fn handle_start_preset_execution(
     resolved_preset: Option<Preset>,
     events: Vec<PresetEvent>,
 ) -> ControlResult {
-    {
-        let mut domain = ctx.domain.lock().unwrap();
+    ctx.with_domain_mut(|domain| {
         domain.preset_name = Some(preset_name.clone());
-    }
+    });
     ctx.start_preset_execution(preset_name.clone(), events);
 
     if let Some(entry) = append_event_log(
@@ -447,10 +436,7 @@ fn handle_start_preset_execution(
 }
 
 fn handle_stop_preset(ctx: &AppCtx) -> ControlResult {
-    let stopped = {
-        let mut domain = ctx.domain.lock().unwrap();
-        stop_active_preset(&mut domain)
-    };
+    let stopped = ctx.with_domain_mut(stop_active_preset);
 
     if stopped {
         ctx.stop_preset_execution();
@@ -460,25 +446,21 @@ fn handle_stop_preset(ctx: &AppCtx) -> ControlResult {
 }
 
 fn handle_stop_all(ctx: &AppCtx) -> ControlResult {
-    {
-        let mut domain = ctx.domain.lock().unwrap();
-        stop_all_transmissions(&mut domain);
-    }
+    ctx.with_domain_mut(stop_all_transmissions);
     ctx.stop_all_execution();
     ctx.broadcast_state();
     Ok(Vec::new())
 }
 
 fn handle_set_remote_control_status(ctx: &AppCtx, status: RemoteControlStatus) {
-    let changed = {
-        let mut domain = ctx.domain.lock().unwrap();
+    let changed = ctx.with_domain_mut(|domain| {
         if domain.remote_control_status == status {
             false
         } else {
             domain.remote_control_status = status;
             true
         }
-    };
+    });
 
     if changed {
         ctx.broadcast_event(ctx.remote_control_status_event());
@@ -492,32 +474,30 @@ fn handle_record_event(ctx: &AppCtx, source: EventSource, kind: EventLogEntryKin
 }
 
 fn handle_push_rf_debug_event(ctx: &AppCtx, event: RfDebugFrame) {
-    {
-        let mut domain = ctx.domain.lock().unwrap();
+    ctx.with_domain_mut(|domain| {
         domain.rf_debug_events.push_back(event.clone());
         if domain.rf_debug_events.len() > MAX_RF_DEBUG_EVENTS {
             domain.rf_debug_events.pop_front();
         }
-    }
+    });
 
     ctx.broadcast_event(AppEvent::RfDebugEvent { event });
 }
 
 fn handle_clear_rf_debug_events(ctx: &AppCtx, listening: bool) -> AppEvent {
-    ctx.domain.lock().unwrap().rf_debug_events.clear();
+    ctx.with_domain_mut(|domain| domain.rf_debug_events.clear());
     ctx.rf_debug_state_event(listening)
 }
 
 fn handle_complete_preset(ctx: &AppCtx, preset_name: String) {
-    let changed = {
-        let mut domain = ctx.domain.lock().unwrap();
+    let changed = ctx.with_domain_mut(|domain| {
         if domain.preset_name.as_deref() == Some(&preset_name) {
             domain.preset_name = None;
             true
         } else {
             false
         }
-    };
+    });
 
     if changed {
         ctx.broadcast_state();
@@ -529,26 +509,27 @@ fn append_event_log(
     source: EventSource,
     kind: EventLogEntryKind,
 ) -> Option<EventLogEntry> {
-    let mut domain = ctx.domain.lock().unwrap();
-    if !domain.device_settings.record_event_log {
-        return None;
-    }
+    ctx.with_domain_mut(|domain| {
+        if !domain.device_settings.record_event_log {
+            return None;
+        }
 
-    let entry = EventLogEntry {
-        sequence: u64::from(ctx.worker.event_log_sequence.fetch_add(1, Ordering::SeqCst) + 1),
-        monotonic_ms: now_millis(),
-        unix_ms: current_unix_ms(),
-        source,
-        kind,
-    };
+        let entry = EventLogEntry {
+            sequence: ctx.next_event_log_sequence(),
+            monotonic_ms: now_millis(),
+            unix_ms: current_unix_ms(),
+            source,
+            kind,
+        };
 
-    domain.event_log_events.push(entry.clone());
-    if domain.event_log_events.len() > MAX_EVENT_LOG_ENTRIES {
-        let excess = domain.event_log_events.len() - MAX_EVENT_LOG_ENTRIES;
-        domain.event_log_events.drain(0..excess);
-    }
+        domain.event_log_events.push(entry.clone());
+        if domain.event_log_events.len() > MAX_EVENT_LOG_ENTRIES {
+            let excess = domain.event_log_events.len() - MAX_EVENT_LOG_ENTRIES;
+            domain.event_log_events.drain(0..excess);
+        }
 
-    Some(entry)
+        Some(entry)
+    })
 }
 
 fn broadcast_event_log_entry(ctx: &AppCtx, entry: &EventLogEntry) {
@@ -579,9 +560,7 @@ fn run_transmission_worker(ctx: &AppCtx, command_rx: Receiver<TransmissionComman
                 let elapsed = preset.started_at.elapsed();
 
                 if elapsed >= target {
-                    if let Err(err) = rf_send_with_led(
-                        &ctx.hardware.rf,
-                        &ctx.hardware.tx_led,
+                    if let Err(err) = ctx.transmit_rf_command_now(
                         event.collar_id,
                         event.channel,
                         event.mode_byte,
@@ -798,9 +777,7 @@ fn next_manual_action(
 }
 
 fn transmit_action(ctx: &AppCtx, action: &ActionSnapshot) {
-    if let Err(err) = rf_send_with_led(
-        &ctx.hardware.rf,
-        &ctx.hardware.tx_led,
+    if let Err(err) = ctx.transmit_rf_command_now(
         action.collar_id,
         action.channel,
         action.mode_byte,
@@ -818,12 +795,7 @@ fn clear_active_preset_name(ctx: &AppCtx, completed_name: &str) {
 }
 
 pub(super) fn ensure_rf_debug_worker(ctx: &AppCtx) {
-    if ctx
-        .debug
-        .rf_debug_worker_spawned
-        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-        .is_err()
-    {
+    if !ctx.try_mark_rf_debug_worker_spawned() {
         return;
     }
 
@@ -832,28 +804,26 @@ pub(super) fn ensure_rf_debug_worker(ctx: &AppCtx) {
         .name("rf-debug-rx".into())
         .stack_size(16384)
         .spawn(move || {
-            let Some(mut receiver) = worker_ctx.hardware.rf_receiver.lock().unwrap().take() else {
-                worker_ctx
-                    .debug
-                    .rf_debug_worker_spawned
-                    .store(false, Ordering::SeqCst);
+            let Some(mut receiver) = worker_ctx.take_rf_receiver() else {
+                worker_ctx.clear_rf_debug_worker_spawned();
                 error!("RF debug receiver missing when worker started");
                 return;
             };
 
             info!("RF debug worker started");
+            let enabled = worker_ctx.rf_debug_enabled_handle();
             loop {
-                if !worker_ctx.debug.rf_debug_enabled.load(Ordering::SeqCst) {
+                if !enabled.load(Ordering::SeqCst) {
                     std::thread::sleep(Duration::from_millis(super::RF_DEBUG_DISABLED_SLEEP_MS));
                     continue;
                 }
 
-                match receiver.listen_until_disabled(&worker_ctx.debug.rf_debug_enabled) {
+                match receiver.listen_until_disabled(enabled.as_ref()) {
                     Ok(Some(event)) => {
-                        worker_ctx.hardware.rx_led.lock().unwrap().set(true);
+                        worker_ctx.set_rx_led(true);
                         worker_ctx.push_rf_debug_event(event);
                         std::thread::sleep(Duration::from_millis(50));
-                        worker_ctx.hardware.rx_led.lock().unwrap().set(false);
+                        worker_ctx.set_rx_led(false);
                     }
                     Ok(None) => {}
                     Err(err) => {
@@ -865,15 +835,13 @@ pub(super) fn ensure_rf_debug_worker(ctx: &AppCtx) {
         });
 
     if let Err(err) = result {
-        ctx.debug
-            .rf_debug_worker_spawned
-            .store(false, Ordering::SeqCst);
+        ctx.clear_rf_debug_worker_spawned();
         error!("Failed to spawn RF debug worker: {err}");
     }
 }
 
 pub fn run_server(ctx: AppCtx) -> Result<()> {
-    let max_clients = ctx.domain.lock().unwrap().device_settings.max_clients as u32;
+    let max_clients = ctx.max_clients();
     let app_ctx = ctx;
     let base_app = super::http::make_app();
     let shared_app = base_app.shared();

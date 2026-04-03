@@ -4,7 +4,7 @@ use crate::protocol::DeviceSettings;
 use anyhow::Result;
 use esp_idf_svc::eventloop::EspSystemEventLoop;
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
-use log::{info, warn};
+use log::info;
 
 #[cfg(esp32)]
 type EthernetKeepalive =
@@ -68,7 +68,7 @@ pub fn connect(
     let sta_will = crate::wifi::sta_will_connect(settings);
     let force_ap = !sta_will && !settings.ap_enabled;
     if force_ap {
-        warn!("WiFi board: forcing AP (WiFi client disabled/unconfigured and AP is off)");
+        log::warn!("WiFi board: forcing AP (WiFi client disabled/unconfigured and AP is off)");
     }
     let wifi = crate::wifi::connect(modem, sys_loop, nvs, settings, force_ap)?;
     Ok(NetworkHandle::Wifi(wifi))
@@ -250,7 +250,9 @@ pub fn connect(
     // (ethernet might also fail, and we need at least one way to reach the board)
     let force_ap_preemptive = !sta_will && !settings.ap_enabled;
     if force_ap_preemptive {
-        warn!("Forcing AP preemptively (WiFi client disabled/unconfigured, AP off, ethernet uncertain)");
+        log::warn!(
+            "Forcing AP preemptively (WiFi client disabled/unconfigured, AP off, ethernet uncertain)"
+        );
     }
 
     let mut wifi = crate::wifi::connect(modem, sys_loop, nvs, settings, force_ap_preemptive)?;
@@ -271,7 +273,7 @@ pub fn connect(
 
     // If both ethernet and wifi STA failed initially AND AP is not running, force AP
     if !eth_has_ip && !wifi_has_ip && !ap_running {
-        warn!("No initial connectivity (Ethernet + WiFi STA both failed) - forcing AP");
+        log::warn!("No initial connectivity (Ethernet + WiFi STA both failed) - forcing AP");
         wifi.force_enable_ap(settings)?;
     }
 
@@ -295,7 +297,7 @@ pub fn connect(
     let sta_will = crate::wifi::sta_will_connect(settings);
     let force_ap = !sta_will && !settings.ap_enabled;
     if force_ap {
-        warn!("WiFi-only board: forcing AP (WiFi client disabled/unconfigured and AP is off)");
+        log::warn!("WiFi-only board: forcing AP (WiFi client disabled/unconfigured and AP is off)");
     }
     let wifi = crate::wifi::connect(modem, sys_loop, nvs, settings, force_ap)?;
     Ok(NetworkHandle::Wifi(wifi))

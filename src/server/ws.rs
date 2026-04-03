@@ -26,17 +26,13 @@ impl ws::WebSocketCallbackWithState<ConnectionState> for WsHandler {
         let ws_addr = state.conn_addr.clone();
         info!("[#{ws_id}] WebSocket connected from {ws_addr}");
 
-        ctx.sessions
-            .ws_clients
-            .lock()
-            .unwrap()
-            .push((ws_id, ws_addr.clone()));
+        ctx.register_ws_client(ws_id, ws_addr.clone());
         for event in ctx.local_ui_sync_events(false) {
             let json = event.json();
             tx.send_text(&json).await?;
         }
 
-        let mut broadcast_rx = ctx.sessions.broadcast_tx.new_receiver();
+        let mut broadcast_rx = ctx.new_broadcast_receiver();
         let mut listening_rf_debug = false;
         let mut buf = vec![0u8; WS_BUF_SIZE];
 
@@ -80,11 +76,7 @@ impl ws::WebSocketCallbackWithState<ConnectionState> for WsHandler {
 
         super::debug::release_rf_debug_listener(ctx, listening_rf_debug);
         cancel_owned_manual_actions(ctx, ActionOwner::LocalWs(ws_id));
-        ctx.sessions
-            .ws_clients
-            .lock()
-            .unwrap()
-            .retain(|(id, _)| *id != ws_id);
+        ctx.unregister_ws_client(ws_id);
 
         info!("[#{ws_id}] WebSocket disconnected from {ws_addr}");
         Ok(())

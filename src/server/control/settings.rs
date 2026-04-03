@@ -8,13 +8,7 @@ use super::{ensure_local_ui, json_message, ControlDispatcher};
 
 pub(super) fn get_device_settings(dispatcher: &ControlDispatcher<'_>) -> ControlResult {
     ensure_local_ui(dispatcher.origin, "get_device_settings")?;
-    let settings = dispatcher
-        .ctx
-        .domain
-        .lock()
-        .unwrap()
-        .device_settings
-        .clone();
+    let settings = dispatcher.ctx.device_settings();
     json_message(&ServerMessage::DeviceSettings {
         settings,
         reboot_required: false,
@@ -24,13 +18,7 @@ pub(super) fn get_device_settings(dispatcher: &ControlDispatcher<'_>) -> Control
 
 pub(super) fn get_network_status(dispatcher: &ControlDispatcher<'_>) -> ControlResult {
     ensure_local_ui(dispatcher.origin, "get_network_status")?;
-    let settings = dispatcher
-        .ctx
-        .domain
-        .lock()
-        .unwrap()
-        .device_settings
-        .clone();
+    let settings = dispatcher.ctx.device_settings();
     json_message(&super::super::status::gather_network_status(&settings))
 }
 
@@ -41,14 +29,7 @@ pub(super) fn save_device_settings(
     ensure_local_ui(dispatcher.origin, "save_device_settings")?;
 
     if settings.device_id.is_empty() {
-        settings.device_id = dispatcher
-            .ctx
-            .domain
-            .lock()
-            .unwrap()
-            .device_settings
-            .device_id
-            .clone();
+        settings.device_id = dispatcher.ctx.device_settings().device_id;
     }
     settings.ntp_server = settings.ntp_server.trim().to_string();
     settings.remote_control_url = settings.remote_control_url.trim().to_string();

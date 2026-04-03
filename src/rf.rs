@@ -23,6 +23,7 @@ const BIT_TOLERANCE_US: u32 = 180;
 const FRAME_GAP_TIMEOUT_US: u64 = 5000;
 const DUPLICATE_FRAME_WINDOW_US: u64 = 100000;
 const IDLE_POLL_SLEEP_US: u64 = 200;
+const ACTIVE_POLL_YIELD_INTERVAL: u32 = 32;
 
 pub struct RfTransmitter {
     pin: PinDriver<'static, Output>,
@@ -138,6 +139,7 @@ impl RfReceiver {
     ) -> Result<Option<RfDebugFrame>> {
         let mut last_level = self.pin.is_high();
         let mut last_edge_us = now_micros();
+        let mut active_poll_iterations = 0u32;
 
         while enabled.load(std::sync::atomic::Ordering::SeqCst) {
             let level = self.pin.is_high();
@@ -149,18 +151,27 @@ impl RfReceiver {
                 }
                 last_level = level;
                 last_edge_us = now_us;
+                active_poll_iterations = 0;
                 continue;
             }
 
             if self.is_receiving() && now_us.saturating_sub(last_edge_us) > FRAME_GAP_TIMEOUT_US {
                 self.reset();
                 last_edge_us = now_us;
+                active_poll_iterations = 0;
             }
 
             if !self.is_receiving() && !level {
+                active_poll_iterations = 0;
                 std::thread::sleep(std::time::Duration::from_micros(IDLE_POLL_SLEEP_US));
             } else {
-                std::hint::spin_loop();
+                active_poll_iterations += 1;
+                if active_poll_iterations >= ACTIVE_POLL_YIELD_INTERVAL {
+                    active_poll_iterations = 0;
+                    std::thread::yield_now();
+                } else {
+                    std::hint::spin_loop();
+                }
             }
         }
 

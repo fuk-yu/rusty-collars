@@ -8,8 +8,8 @@ use crate::{scheduling, validation};
 
 use super::super::{
     command_intensity, event_source, resolve_random_duration, resolve_random_u8,
-    rf_lockout_remaining_ms, rf_send_with_led, ActionKey, ActionOwner, ActiveActionHandle, AppCtx,
-    ControlResult, RandomResolver,
+    rf_lockout_remaining_ms, ActionKey, ActionOwner, ActiveActionHandle, AppCtx, ControlResult,
+    RandomResolver,
 };
 use super::ControlDispatcher;
 
@@ -20,9 +20,7 @@ pub(super) fn send_command(
     intensity: u8,
 ) -> ControlResult {
     let (collar, intensity) = resolve_collar_command(ctx, &collar_name, mode, intensity)?;
-    if let Err(err) = rf_send_with_led(
-        &ctx.hardware.rf,
-        &ctx.hardware.tx_led,
+    if let Err(err) = ctx.transmit_rf_command_now(
         collar.collar_id,
         collar.channel,
         mode.to_rf_byte(),
@@ -108,44 +106,44 @@ pub(super) fn stop_action(ctx: &AppCtx, collar_name: String, mode: CommandMode) 
 
 pub(super) fn run_preset(dispatcher: &ControlDispatcher<'_>, name: String) -> ControlResult {
     let source = event_source(dispatcher.origin);
-    let (preset_name, resolved_preset_for_log, events) = {
-        let domain = dispatcher.ctx.domain.lock().unwrap();
-        if rf_lockout_remaining_ms(&domain) > 0 {
-            return Err(ControlError::TransmissionLockout);
-        }
-
-        let Some(preset) = domain
-            .presets
-            .iter()
-            .find(|preset| preset.name == name)
-            .cloned()
-        else {
-            return Err(ControlError::UnknownPreset(name.clone()));
-        };
-        validation::validate_preset(&preset, &domain.collars)
-            .map_err(|err| ControlError::Validation(err.to_string()))?;
-
-        let has_random = preset
-            .tracks
-            .iter()
-            .any(|track| track.steps.iter().any(|step| step.has_random()));
-        let mut rng = dispatcher.ctx.worker.rng.lock().unwrap();
-        let mut resolver = RandomResolver { rng: &mut *rng };
-        let resolved = scheduling::resolve_preset(&preset, &mut resolver);
-        let events = scheduling::schedule_preset_events(
-            &resolved,
-            &domain.collars,
-            &mut scheduling::MidpointResolver,
+    let (preset, collars, lockout) = dispatcher.ctx.with_domain(|domain| {
+        (
+            domain
+                .presets
+                .iter()
+                .find(|preset| preset.name == name)
+                .cloned(),
+            domain.collars.clone(),
+            rf_lockout_remaining_ms(domain),
         )
-        .map_err(|err| ControlError::Validation(err.to_string()))?;
-        let resolved_for_log = has_random.then_some(resolved);
+    });
+    if lockout > 0 {
+        return Err(ControlError::TransmissionLockout);
+    }
 
-        (preset.name.clone(), resolved_for_log, events)
+    let Some(preset) = preset else {
+        return Err(ControlError::UnknownPreset(name));
     };
+    validation::validate_preset(&preset, &collars)
+        .map_err(|err| ControlError::Validation(err.to_string()))?;
+
+    let has_random = preset
+        .tracks
+        .iter()
+        .any(|track| track.steps.iter().any(|step| step.has_random()));
+    let resolved = dispatcher.ctx.with_rng(|rng| {
+        let mut resolver = RandomResolver { rng };
+        scheduling::resolve_preset(&preset, &mut resolver)
+    });
+    let events =
+        scheduling::schedule_preset_events(&resolved, &collars, &mut scheduling::MidpointResolver)
+            .map_err(|err| ControlError::Validation(err.to_string()))?;
+    let resolved_for_log = has_random.then_some(resolved);
+    let preset_name = preset.name.clone();
 
     dispatcher
         .ctx
-        .start_preset_run(preset_name, source, resolved_preset_for_log, events)
+        .start_preset_run(preset_name, source, resolved_for_log, events)
 }
 
 pub(super) fn stop_preset(ctx: &AppCtx) -> ControlResult {
@@ -166,8 +164,7 @@ fn resolve_collar_command(
     mode: CommandMode,
     intensity: u8,
 ) -> core::result::Result<(crate::protocol::Collar, u8), ControlError> {
-    let (collar, lockout) = {
-        let domain = ctx.domain.lock().unwrap();
+    let (collar, lockout) = ctx.with_domain(|domain| {
         (
             domain
                 .collars
@@ -176,7 +173,7 @@ fn resolve_collar_command(
                 .cloned(),
             rf_lockout_remaining_ms(&domain),
         )
-    };
+    });
 
     if lockout > 0 {
         return Err(ControlError::TransmissionLockout);
@@ -216,24 +213,22 @@ fn start_manual_action(
     }
 
     let actual_intensity = match intensity_max {
-        Some(max) if max > normalized_intensity && mode.has_intensity() => {
-            let mut rng = ctx.worker.rng.lock().unwrap();
-            resolve_random_u8(&mut *rng, normalized_intensity, max, intensity_distribution)
-        }
+        Some(max) if max > normalized_intensity && mode.has_intensity() => ctx.with_rng(|rng| {
+            resolve_random_u8(rng, normalized_intensity, max, intensity_distribution)
+        }),
         _ => normalized_intensity,
     };
 
     let now = Instant::now();
     let actual_duration_ms = match (duration_ms, duration_max_ms) {
-        (Some(min), Some(max)) if max > min => {
-            let mut rng = ctx.worker.rng.lock().unwrap();
+        (Some(min), Some(max)) if max > min => ctx.with_rng(|rng| {
             Some(resolve_random_duration(
-                &mut *rng,
+                rng,
                 min,
                 max,
                 duration_distribution,
             ))
-        }
+        }),
         (duration, _) => duration,
     };
     let deadline =

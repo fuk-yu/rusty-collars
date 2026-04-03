@@ -1,4 +1,3 @@
-use std::sync::atomic::Ordering;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -69,7 +68,7 @@ fn worker(ctx: AppCtx) {
     let mut reconnect_delay_ms = RECONNECT_BASE_DELAY_MS;
 
     loop {
-        let settings = ctx.domain.lock().unwrap().device_settings.clone();
+        let settings = ctx.device_settings();
         if !settings.remote_control_enabled {
             ctx.set_remote_control_status(remote_control_status(&settings, false, None, "Off"));
             reconnect_delay_ms = RECONNECT_BASE_DELAY_MS;
@@ -95,10 +94,7 @@ fn worker(ctx: AppCtx) {
             "Connecting...",
         ));
 
-        let settings_revision = ctx
-            .sessions
-            .remote_control_settings_revision
-            .load(Ordering::SeqCst);
+        let settings_revision = ctx.remote_control_settings_revision();
         let exit = run_connection(&ctx, &settings, &endpoint_url, url_kind, settings_revision);
 
         match exit {
@@ -179,7 +175,7 @@ fn run_event_loop(
     event_rx: &mpsc::Receiver<RemoteWsEvent>,
     settings_revision: u32,
 ) -> RunLoopExit {
-    let mut broadcast_rx = ctx.sessions.broadcast_tx.new_receiver();
+    let mut broadcast_rx = ctx.new_broadcast_receiver();
     let mut connected = false;
     let mut transport_connected = false;
     let connect_started_at = Instant::now();
@@ -189,12 +185,7 @@ fn run_event_loop(
     let mut pending_ping: Option<(u32, Instant)> = None;
 
     loop {
-        if ctx
-            .sessions
-            .remote_control_settings_revision
-            .load(Ordering::SeqCst)
-            != settings_revision
-        {
+        if ctx.remote_control_settings_revision() != settings_revision {
             return RunLoopExit::SettingsChanged {
                 was_connected: connected,
             };

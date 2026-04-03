@@ -143,14 +143,7 @@ pub(crate) fn remote_control_dispatcher(ctx: &AppCtx) -> ControlDispatcher<'_> {
 }
 
 pub(crate) fn pong_json(ctx: &AppCtx, nonce: u32) -> String {
-    let client_ips: Vec<String> = ctx
-        .sessions
-        .ws_clients
-        .lock()
-        .unwrap()
-        .iter()
-        .map(|(_, addr)| addr.clone())
-        .collect();
+    let client_ips = ctx.client_ips();
 
     serde_json::to_string(&ServerMessage::Pong {
         nonce,

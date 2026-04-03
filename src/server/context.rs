@@ -1,7 +1,7 @@
-use std::sync::atomic::{AtomicBool, AtomicU32};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 
-use async_broadcast::{InactiveReceiver, Sender as BroadcastSender};
+use async_broadcast::{InactiveReceiver, Receiver as BroadcastReceiver, Sender as BroadcastSender};
 use rand::rngs::SmallRng;
 use rand::SeedableRng;
 
@@ -20,12 +20,12 @@ use super::{
 
 #[derive(Clone)]
 pub struct AppCtx {
-    pub domain: Arc<Mutex<DomainState>>,
-    pub repository: SharedRepository,
-    pub hardware: HardwareCtx,
-    pub sessions: SessionCtx,
-    pub worker: WorkerCtx,
-    pub debug: DebugCtx,
+    domain: Arc<Mutex<DomainState>>,
+    repository: SharedRepository,
+    hardware: HardwareCtx,
+    sessions: SessionCtx,
+    worker: WorkerCtx,
+    debug: DebugCtx,
 }
 
 #[derive(Clone)]
@@ -96,6 +96,150 @@ impl AppCtx {
 
     pub(crate) fn broadcast_event(&self, event: AppEvent) {
         let _ = self.sessions.broadcast_tx.try_broadcast(event);
+    }
+
+    pub(crate) fn with_domain<T>(&self, f: impl FnOnce(&DomainState) -> T) -> T {
+        let domain = self.domain.lock().unwrap();
+        f(&domain)
+    }
+
+    pub(crate) fn with_domain_mut<T>(&self, f: impl FnOnce(&mut DomainState) -> T) -> T {
+        let mut domain = self.domain.lock().unwrap();
+        f(&mut domain)
+    }
+
+    pub(crate) fn with_rng<T>(&self, f: impl FnOnce(&mut SmallRng) -> T) -> T {
+        let mut rng = self.worker.rng.lock().unwrap();
+        f(&mut rng)
+    }
+
+    pub(crate) fn device_settings(&self) -> DeviceSettings {
+        self.with_domain(|domain| domain.device_settings.clone())
+    }
+
+    pub(crate) fn collars_snapshot(&self) -> Vec<Collar> {
+        self.with_domain(|domain| domain.collars.clone())
+    }
+
+    pub(crate) fn export_data_snapshot(&self) -> ExportData {
+        self.with_domain(|domain| ExportData {
+            collars: domain.collars.clone(),
+            presets: domain.presets.clone(),
+        })
+    }
+
+    pub(crate) fn register_ws_client(&self, conn_id: u32, conn_addr: String) {
+        self.sessions
+            .ws_clients
+            .lock()
+            .unwrap()
+            .push((conn_id, conn_addr));
+    }
+
+    pub(crate) fn unregister_ws_client(&self, conn_id: u32) {
+        self.sessions
+            .ws_clients
+            .lock()
+            .unwrap()
+            .retain(|(id, _)| *id != conn_id);
+    }
+
+    pub(crate) fn client_ips(&self) -> Vec<String> {
+        self.sessions
+            .ws_clients
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(_, addr)| addr.clone())
+            .collect()
+    }
+
+    pub(crate) fn new_broadcast_receiver(&self) -> BroadcastReceiver<AppEvent> {
+        self.sessions.broadcast_tx.new_receiver()
+    }
+
+    pub(crate) fn remote_control_settings_revision(&self) -> u32 {
+        self.sessions
+            .remote_control_settings_revision
+            .load(Ordering::SeqCst)
+    }
+
+    pub(crate) fn bump_remote_control_settings_revision(&self) {
+        self.sessions
+            .remote_control_settings_revision
+            .fetch_add(1, Ordering::SeqCst);
+    }
+
+    pub(crate) fn next_event_log_sequence(&self) -> u64 {
+        u64::from(
+            self.worker
+                .event_log_sequence
+                .fetch_add(1, Ordering::SeqCst)
+                + 1,
+        )
+    }
+
+    pub(crate) fn max_clients(&self) -> u32 {
+        self.with_domain(|domain| domain.device_settings.max_clients as u32)
+    }
+
+    pub(crate) fn transmit_rf_command_now(
+        &self,
+        collar_id: u16,
+        channel: u8,
+        mode_byte: u8,
+        intensity: u8,
+    ) -> anyhow::Result<()> {
+        super::rf_send_with_led(
+            &self.hardware.rf,
+            &self.hardware.tx_led,
+            collar_id,
+            channel,
+            mode_byte,
+            intensity,
+        )
+    }
+
+    pub(crate) fn take_rf_receiver(&self) -> Option<RfReceiver> {
+        self.hardware.rf_receiver.lock().unwrap().take()
+    }
+
+    pub(crate) fn set_rx_led(&self, enabled: bool) {
+        self.hardware.rx_led.lock().unwrap().set(enabled);
+    }
+
+    pub(crate) fn try_mark_rf_debug_worker_spawned(&self) -> bool {
+        self.debug
+            .rf_debug_worker_spawned
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+    }
+
+    pub(crate) fn clear_rf_debug_worker_spawned(&self) {
+        self.debug
+            .rf_debug_worker_spawned
+            .store(false, Ordering::SeqCst);
+    }
+
+    pub(crate) fn set_rf_debug_enabled(&self, enabled: bool) {
+        self.debug.rf_debug_enabled.store(enabled, Ordering::SeqCst);
+    }
+
+    pub(crate) fn rf_debug_enabled_handle(&self) -> Arc<AtomicBool> {
+        self.debug.rf_debug_enabled.clone()
+    }
+
+    pub(crate) fn increment_rf_debug_listener_count(&self) {
+        self.debug
+            .rf_debug_listener_count
+            .fetch_add(1, Ordering::SeqCst);
+    }
+
+    pub(crate) fn release_rf_debug_listener(&self) -> bool {
+        self.debug
+            .rf_debug_listener_count
+            .fetch_sub(1, Ordering::SeqCst)
+            <= 1
     }
 
     pub(crate) fn broadcast_state(&self) {
@@ -260,37 +404,34 @@ impl AppCtx {
     }
 
     pub(crate) fn state_event(&self) -> AppEvent {
-        let domain = self.domain.lock().unwrap();
-        AppEvent::State {
+        self.with_domain(|domain| AppEvent::State {
             device_id: domain.device_settings.device_id.clone(),
             app_version: crate::build_info::APP_VERSION,
             server_uptime_s: uptime_seconds(),
             collars: domain.collars.clone(),
             presets: domain.presets.clone(),
             preset_running: domain.preset_name.clone(),
-            rf_lockout_remaining_ms: rf_lockout_remaining_ms(&domain),
-        }
+            rf_lockout_remaining_ms: rf_lockout_remaining_ms(domain),
+        })
     }
 
     pub(crate) fn rf_debug_state_event(&self, listening: bool) -> AppEvent {
-        let domain = self.domain.lock().unwrap();
-        AppEvent::RfDebugState {
+        self.with_domain(|domain| AppEvent::RfDebugState {
             listening,
             events: domain.rf_debug_events.clone(),
-        }
+        })
     }
 
     pub(crate) fn remote_control_status_event(&self) -> AppEvent {
-        let status = self.domain.lock().unwrap().remote_control_status.clone();
+        let status = self.with_domain(|domain| domain.remote_control_status.clone());
         AppEvent::RemoteControlStatus { status }
     }
 
     pub(crate) fn event_log_state_event(&self) -> AppEvent {
-        let domain = self.domain.lock().unwrap();
-        AppEvent::EventLogState {
+        self.with_domain(|domain| AppEvent::EventLogState {
             enabled: domain.device_settings.record_event_log,
             events: domain.event_log_events.clone(),
-        }
+        })
     }
 
     pub(crate) fn remote_sync_events(&self) -> [AppEvent; 3] {

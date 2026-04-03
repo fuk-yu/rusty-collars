@@ -52,6 +52,8 @@ impl ApplicationBuilder {
         log_heap("boot");
 
         let peripherals = Peripherals::take()?;
+        #[cfg(all(esp32p4, not(has_wifi)))]
+        let _ = &peripherals;
         let sys_loop = EspSystemEventLoop::take()?;
         let nvs_partition = EspDefaultNvsPartition::take()?;
 
@@ -180,7 +182,7 @@ impl Application {
 
         let app_worker = server::start_app_worker(ctx.clone());
         let time_sync = if background_services_enabled {
-            let time_sync_settings = ctx.domain.lock().unwrap().device_settings.clone();
+            let time_sync_settings = ctx.device_settings();
             let time_sync_ctx = ctx.clone();
             time_sync::maybe_start(&time_sync_settings, move |server| {
                 time_sync_ctx.record_event(
