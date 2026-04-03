@@ -31,7 +31,8 @@ impl ws::WebSocketCallbackWithState<ConnectionState> for WsHandler {
             .lock()
             .unwrap()
             .push((ws_id, ws_addr.clone()));
-        for json in ctx.local_ui_sync_jsons(false) {
+        for event in ctx.local_ui_sync_events(false) {
+            let json = event.json();
             tx.send_text(&json).await?;
         }
 
@@ -65,11 +66,12 @@ impl ws::WebSocketCallbackWithState<ConnectionState> for WsHandler {
                     warn!("WS read error: {err:?}");
                     break;
                 }
-                Ok(Either::Second(Ok(msg))) => {
-                    if msg.rf_debug && !listening_rf_debug {
+                Ok(Either::Second(Ok(event))) => {
+                    if event.is_rf_debug() && !listening_rf_debug {
                         continue;
                     }
-                    tx.send_text(&msg.json).await?;
+                    let json = event.json();
+                    tx.send_text(&json).await?;
                 }
                 Ok(Either::Second(Err(_))) => break,
                 Err(_) => break,
@@ -107,17 +109,20 @@ async fn handle_text_message<W: picoserve::io::Write>(
 
     match msg {
         ClientMessage::StartRfDebug => {
-            let json = super::debug::start_rf_debug_listener(ctx, *listening_rf_debug);
+            let event = super::debug::start_rf_debug_listener(ctx, *listening_rf_debug);
             *listening_rf_debug = true;
+            let json = event.json();
             tx.send_text(&json).await?;
         }
         ClientMessage::StopRfDebug => {
-            let json = super::debug::stop_rf_debug_listener(ctx, *listening_rf_debug);
+            let event = super::debug::stop_rf_debug_listener(ctx, *listening_rf_debug);
             *listening_rf_debug = false;
+            let json = event.json();
             tx.send_text(&json).await?;
         }
         ClientMessage::ClearRfDebug => {
-            let json = super::debug::clear_rf_debug_events(ctx, *listening_rf_debug);
+            let event = super::debug::clear_rf_debug_events(ctx, *listening_rf_debug);
+            let json = event.json();
             tx.send_text(&json).await?;
         }
         ClientMessage::Reboot => {

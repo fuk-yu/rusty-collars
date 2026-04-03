@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender};
-use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -22,7 +21,8 @@ use rusty_collars_core::rf_timing::RF_COMMAND_TRANSMIT_DURATION_US;
 use super::{
     current_unix_ms, device_settings_reboot_required, free_heap, now_millis, rf_send_with_led,
     stop_active_preset, stop_all_transmissions, ActionKey, ActiveActionHandle, AppCommand, AppCtx,
-    ControlResult, TransmissionCommand, HAS_WIFI, MAX_EVENT_LOG_ENTRIES, MAX_RF_DEBUG_EVENTS,
+    AppEvent, ControlResult, TransmissionCommand, HAS_WIFI, MAX_EVENT_LOG_ENTRIES,
+    MAX_RF_DEBUG_EVENTS,
 };
 
 const HTTP_BUF_SIZE: usize = 1024;
@@ -405,10 +405,10 @@ fn handle_save_device_settings(ctx: &AppCtx, settings: DeviceSettings) -> Contro
     }
 
     if remote_settings_changed {
-        ctx.broadcast_remote_control_status();
+        ctx.broadcast_event(ctx.remote_control_status_event());
     }
     if event_log_changed {
-        ctx.broadcast_event_log_state();
+        ctx.broadcast_event(ctx.event_log_state_event());
     }
 
     json_message(&ServerMessage::DeviceSettings {
@@ -481,7 +481,7 @@ fn handle_set_remote_control_status(ctx: &AppCtx, status: RemoteControlStatus) {
     };
 
     if changed {
-        ctx.broadcast_remote_control_status();
+        ctx.broadcast_event(ctx.remote_control_status_event());
     }
 }
 
@@ -500,15 +500,12 @@ fn handle_push_rf_debug_event(ctx: &AppCtx, event: RfDebugFrame) {
         }
     }
 
-    ctx.broadcast_json(
-        Arc::from(serde_json::to_string(&ServerMessage::RfDebugEvent { event: &event }).unwrap()),
-        true,
-    );
+    ctx.broadcast_event(AppEvent::RfDebugEvent { event });
 }
 
-fn handle_clear_rf_debug_events(ctx: &AppCtx, listening: bool) -> Arc<str> {
+fn handle_clear_rf_debug_events(ctx: &AppCtx, listening: bool) -> AppEvent {
     ctx.domain.lock().unwrap().rf_debug_events.clear();
-    ctx.rf_debug_state_json(listening)
+    ctx.rf_debug_state_event(listening)
 }
 
 fn handle_complete_preset(ctx: &AppCtx, preset_name: String) {
@@ -555,10 +552,9 @@ fn append_event_log(
 }
 
 fn broadcast_event_log_entry(ctx: &AppCtx, entry: &EventLogEntry) {
-    ctx.broadcast_json(
-        Arc::from(serde_json::to_string(&ServerMessage::EventLogEvent { event: entry }).unwrap()),
-        false,
-    );
+    ctx.broadcast_event(AppEvent::EventLogEvent {
+        event: entry.clone(),
+    });
 }
 
 fn json_message(message: &impl Serialize) -> ControlResult {

@@ -64,7 +64,7 @@ impl DeviceSettings {
         }
         #[cfg(esp32p4)]
         {
-            (7, 8, 5, 6)
+            (33, 8, 23, 5)
         }
         #[cfg(not(any(esp32c6, esp32p4)))]
         {

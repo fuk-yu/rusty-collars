@@ -225,12 +225,13 @@ fn run_event_loop(
         }
 
         if connected {
-            while let Ok(message) = broadcast_rx.try_recv() {
-                if message.rf_debug {
+            while let Ok(event) = broadcast_rx.try_recv() {
+                if event.is_rf_debug() {
                     continue;
                 }
 
-                if let Err(err) = send_text(client, &message.json) {
+                let json = event.json();
+                if let Err(err) = send_text(client, &json) {
                     return RunLoopExit::Disconnected {
                         was_connected: connected,
                         reason: err,
@@ -518,7 +519,8 @@ fn send_initial_state(
         },
     );
 
-    for json in ctx.remote_sync_jsons() {
+    for event in ctx.remote_sync_events() {
+        let json = event.json();
         send_text(client, &json)?;
     }
     Ok(())

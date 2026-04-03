@@ -7,15 +7,14 @@ use rand::SeedableRng;
 
 use crate::led::Led;
 use crate::protocol::{
-    Collar, DeviceSettings, EventLogEntryKind, EventSource, ExportData, Preset,
-    RemoteControlStatus, ServerMessage,
+    Collar, DeviceSettings, EventLogEntryKind, EventSource, ExportData, Preset, RemoteControlStatus,
 };
 use crate::repository::SharedRepository;
 use crate::rf::{RfReceiver, RfTransmitter};
 
 use super::status;
 use super::{
-    rf_lockout_remaining_ms, uptime_seconds, AppCommand, BroadcastMsg, DebugCtx, DomainState,
+    rf_lockout_remaining_ms, uptime_seconds, AppCommand, AppEvent, DebugCtx, DomainState,
     HardwareCtx, SessionCtx, TransmissionCommand, WorkerCtx,
 };
 
@@ -41,8 +40,8 @@ impl AppCtx {
         rf: Arc<Mutex<RfTransmitter>>,
         tx_led: Arc<Mutex<Led>>,
         rx_led: Arc<Mutex<Led>>,
-        broadcast_tx: BroadcastSender<BroadcastMsg>,
-        broadcast_keepalive: InactiveReceiver<BroadcastMsg>,
+        broadcast_tx: BroadcastSender<AppEvent>,
+        broadcast_keepalive: InactiveReceiver<AppEvent>,
         rf_receiver: RfReceiver,
         device_settings: DeviceSettings,
         repository: SharedRepository,
@@ -95,15 +94,12 @@ impl AppCtx {
         }
     }
 
-    pub(crate) fn broadcast_json(&self, json: Arc<str>, rf_debug: bool) {
-        let _ = self
-            .sessions
-            .broadcast_tx
-            .try_broadcast(BroadcastMsg { json, rf_debug });
+    pub(crate) fn broadcast_event(&self, event: AppEvent) {
+        let _ = self.sessions.broadcast_tx.try_broadcast(event);
     }
 
     pub(crate) fn broadcast_state(&self) {
-        self.broadcast_json(self.state_json(), false);
+        self.broadcast_event(self.state_event());
     }
 
     pub(crate) fn set_manual_action(
@@ -255,7 +251,7 @@ impl AppCtx {
         self.call_app(|reply| AppCommand::StopAll { reply })
     }
 
-    pub(crate) fn clear_rf_debug_events(&self, listening: bool) -> Arc<str> {
+    pub(crate) fn clear_rf_debug_events(&self, listening: bool) -> AppEvent {
         self.call_app(|reply| AppCommand::ClearRfDebugEvents { listening, reply })
     }
 
@@ -263,72 +259,55 @@ impl AppCtx {
         self.send_app_command(AppCommand::CompletePreset { preset_name });
     }
 
-    pub(crate) fn state_json(&self) -> Arc<str> {
+    pub(crate) fn state_event(&self) -> AppEvent {
         let domain = self.domain.lock().unwrap();
-        Arc::from(
-            serde_json::to_string(&ServerMessage::State {
-                device_id: &domain.device_settings.device_id,
-                app_version: crate::build_info::APP_VERSION,
-                server_uptime_s: uptime_seconds(),
-                collars: &domain.collars,
-                presets: &domain.presets,
-                preset_running: domain.preset_name.as_deref(),
-                rf_lockout_remaining_ms: rf_lockout_remaining_ms(&domain),
-            })
-            .unwrap(),
-        )
+        AppEvent::State {
+            device_id: domain.device_settings.device_id.clone(),
+            app_version: crate::build_info::APP_VERSION,
+            server_uptime_s: uptime_seconds(),
+            collars: domain.collars.clone(),
+            presets: domain.presets.clone(),
+            preset_running: domain.preset_name.clone(),
+            rf_lockout_remaining_ms: rf_lockout_remaining_ms(&domain),
+        }
     }
 
-    pub(crate) fn rf_debug_state_json(&self, listening: bool) -> Arc<str> {
+    pub(crate) fn rf_debug_state_event(&self, listening: bool) -> AppEvent {
         let domain = self.domain.lock().unwrap();
-        Arc::from(
-            serde_json::to_string(&ServerMessage::RfDebugState {
-                listening,
-                events: &domain.rf_debug_events,
-            })
-            .unwrap(),
-        )
+        AppEvent::RfDebugState {
+            listening,
+            events: domain.rf_debug_events.clone(),
+        }
     }
 
-    pub(crate) fn remote_control_status_json(&self) -> Arc<str> {
+    pub(crate) fn remote_control_status_event(&self) -> AppEvent {
         let status = self.domain.lock().unwrap().remote_control_status.clone();
-        Arc::from(serde_json::to_string(&ServerMessage::RemoteControlStatus { status }).unwrap())
+        AppEvent::RemoteControlStatus { status }
     }
 
-    pub(crate) fn event_log_state_json(&self) -> Arc<str> {
+    pub(crate) fn event_log_state_event(&self) -> AppEvent {
         let domain = self.domain.lock().unwrap();
-        Arc::from(
-            serde_json::to_string(&ServerMessage::EventLogState {
-                enabled: domain.device_settings.record_event_log,
-                events: &domain.event_log_events,
-            })
-            .unwrap(),
-        )
+        AppEvent::EventLogState {
+            enabled: domain.device_settings.record_event_log,
+            events: domain.event_log_events.clone(),
+        }
     }
 
-    pub(crate) fn remote_sync_jsons(&self) -> [Arc<str>; 3] {
+    pub(crate) fn remote_sync_events(&self) -> [AppEvent; 3] {
         [
-            self.remote_control_status_json(),
-            self.state_json(),
-            self.event_log_state_json(),
+            self.remote_control_status_event(),
+            self.state_event(),
+            self.event_log_state_event(),
         ]
     }
 
-    pub(crate) fn local_ui_sync_jsons(&self, listening_rf_debug: bool) -> [Arc<str>; 4] {
+    pub(crate) fn local_ui_sync_events(&self, listening_rf_debug: bool) -> [AppEvent; 4] {
         [
-            self.state_json(),
-            self.remote_control_status_json(),
-            self.event_log_state_json(),
-            self.rf_debug_state_json(listening_rf_debug),
+            self.state_event(),
+            self.remote_control_status_event(),
+            self.event_log_state_event(),
+            self.rf_debug_state_event(listening_rf_debug),
         ]
-    }
-
-    pub(crate) fn broadcast_remote_control_status(&self) {
-        self.broadcast_json(self.remote_control_status_json(), false);
-    }
-
-    pub(crate) fn broadcast_event_log_state(&self) {
-        self.broadcast_json(self.event_log_state_json(), false);
     }
 
     pub(crate) fn set_remote_control_status(&self, status: RemoteControlStatus) {

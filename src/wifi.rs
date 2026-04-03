@@ -160,6 +160,7 @@ impl WifiController {
         }
     }
 
+    #[cfg(all(esp32p4, has_wifi))]
     /// Returns true if the STA interface has an IP address.
     pub fn sta_has_ip(&self) -> bool {
         if !self.sta_enabled {
@@ -173,6 +174,7 @@ impl WifiController {
             .unwrap_or(false)
     }
 
+    #[cfg(all(esp32p4, has_wifi))]
     /// Force-enable AP mode. Used when initial connectivity fails and the board
     /// needs to be reachable for configuration.
     /// Rebuilds the configuration from scratch using stored state (avoids

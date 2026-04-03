@@ -8,14 +8,93 @@ use async_broadcast::{InactiveReceiver, Sender as BroadcastSender};
 use crate::led::Led;
 use crate::protocol::{
     Collar, CommandMode, DeviceSettings, EventLogEntry, EventLogEntryKind, EventSource, ExportData,
-    Preset, RemoteControlStatus, RfDebugFrame,
+    Preset, RemoteControlStatus, RfDebugFrame, ServerMessage,
 };
 use crate::rf::{RfReceiver, RfTransmitter};
 
 #[derive(Clone)]
-pub struct BroadcastMsg {
-    pub json: Arc<str>,
-    pub rf_debug: bool,
+pub(crate) enum AppEvent {
+    State {
+        device_id: String,
+        app_version: &'static str,
+        server_uptime_s: u64,
+        collars: Vec<Collar>,
+        presets: Vec<Preset>,
+        preset_running: Option<String>,
+        rf_lockout_remaining_ms: u64,
+    },
+    RfDebugState {
+        listening: bool,
+        events: VecDeque<RfDebugFrame>,
+    },
+    RfDebugEvent {
+        event: RfDebugFrame,
+    },
+    RemoteControlStatus {
+        status: RemoteControlStatus,
+    },
+    EventLogState {
+        enabled: bool,
+        events: Vec<EventLogEntry>,
+    },
+    EventLogEvent {
+        event: EventLogEntry,
+    },
+}
+
+impl AppEvent {
+    pub(crate) fn is_rf_debug(&self) -> bool {
+        matches!(self, Self::RfDebugState { .. } | Self::RfDebugEvent { .. })
+    }
+
+    pub(crate) fn json(&self) -> Arc<str> {
+        Arc::from(match self {
+            Self::State {
+                device_id,
+                app_version,
+                server_uptime_s,
+                collars,
+                presets,
+                preset_running,
+                rf_lockout_remaining_ms,
+            } => serde_json::to_string(&ServerMessage::State {
+                device_id,
+                app_version,
+                server_uptime_s: *server_uptime_s,
+                collars,
+                presets,
+                preset_running: preset_running.as_deref(),
+                rf_lockout_remaining_ms: *rf_lockout_remaining_ms,
+            })
+            .unwrap(),
+            Self::RfDebugState { listening, events } => {
+                serde_json::to_string(&ServerMessage::RfDebugState {
+                    listening: *listening,
+                    events,
+                })
+                .unwrap()
+            }
+            Self::RfDebugEvent { event } => {
+                serde_json::to_string(&ServerMessage::RfDebugEvent { event }).unwrap()
+            }
+            Self::RemoteControlStatus { status } => {
+                serde_json::to_string(&ServerMessage::RemoteControlStatus {
+                    status: status.clone(),
+                })
+                .unwrap()
+            }
+            Self::EventLogState { enabled, events } => {
+                serde_json::to_string(&ServerMessage::EventLogState {
+                    enabled: *enabled,
+                    events,
+                })
+                .unwrap()
+            }
+            Self::EventLogEvent { event } => {
+                serde_json::to_string(&ServerMessage::EventLogEvent { event }).unwrap()
+            }
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -134,7 +213,7 @@ pub(crate) enum AppCommand {
     },
     ClearRfDebugEvents {
         listening: bool,
-        reply: mpsc::SyncSender<Arc<str>>,
+        reply: mpsc::SyncSender<AppEvent>,
     },
     CompletePreset {
         preset_name: String,
@@ -162,9 +241,9 @@ pub struct HardwareCtx {
 
 #[derive(Clone)]
 pub struct SessionCtx {
-    pub broadcast_tx: BroadcastSender<BroadcastMsg>,
+    pub broadcast_tx: BroadcastSender<AppEvent>,
     /// Keeps the broadcast channel alive even when no active receivers exist.
-    pub(crate) _broadcast_keepalive: InactiveReceiver<BroadcastMsg>,
+    pub(crate) _broadcast_keepalive: InactiveReceiver<AppEvent>,
     pub ws_clients: Arc<Mutex<Vec<(u32, String)>>>,
     pub remote_control_settings_revision: Arc<AtomicU32>,
 }
