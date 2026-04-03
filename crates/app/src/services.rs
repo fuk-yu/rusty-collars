@@ -438,19 +438,43 @@ fn stop_active_preset(domain: &mut DomainState) -> bool {
     }
 }
 
+/// Exhaustive destructuring ensures adding a new field to DeviceSettings
+/// fails to compile until explicitly classified here.
 fn device_settings_reboot_required(previous: &DeviceSettings, next: &DeviceSettings) -> bool {
-    previous.tx_led_pin != next.tx_led_pin
-        || previous.rx_led_pin != next.rx_led_pin
-        || previous.rf_tx_pin != next.rf_tx_pin
-        || previous.rf_rx_pin != next.rf_rx_pin
-        || previous.wifi_client_enabled != next.wifi_client_enabled
-        || previous.wifi_ssid != next.wifi_ssid
-        || previous.wifi_password != next.wifi_password
-        || previous.ap_enabled != next.ap_enabled
-        || previous.ap_password != next.ap_password
-        || previous.max_clients != next.max_clients
-        || previous.ntp_enabled != next.ntp_enabled
-        || previous.ntp_server != next.ntp_server
+    let DeviceSettings {
+        // Hardware fields — changes require reboot
+        tx_led_pin,
+        rx_led_pin,
+        rf_tx_pin,
+        rf_rx_pin,
+        wifi_client_enabled,
+        wifi_ssid,
+        wifi_password,
+        ap_enabled,
+        ap_password,
+        max_clients,
+        ntp_enabled,
+        ntp_server,
+        // Hot-reloadable fields — no reboot needed
+        device_id: _,
+        remote_control_enabled: _,
+        remote_control_url: _,
+        remote_control_validate_cert: _,
+        record_event_log: _,
+    } = previous;
+
+    *tx_led_pin != next.tx_led_pin
+        || *rx_led_pin != next.rx_led_pin
+        || *rf_tx_pin != next.rf_tx_pin
+        || *rf_rx_pin != next.rf_rx_pin
+        || *wifi_client_enabled != next.wifi_client_enabled
+        || *wifi_ssid != next.wifi_ssid
+        || *wifi_password != next.wifi_password
+        || *ap_enabled != next.ap_enabled
+        || *ap_password != next.ap_password
+        || *max_clients != next.max_clients
+        || *ntp_enabled != next.ntp_enabled
+        || *ntp_server != next.ntp_server
 }
 
 fn remote_control_status_from_settings(settings: &DeviceSettings) -> RemoteControlStatus {
@@ -823,5 +847,342 @@ mod tests {
         assert!(import.preset_stopped || import.cancel_manual_actions);
         assert_eq!(import.collars[0].name, "gamma");
         assert_eq!(import.presets[0].name, "imported");
+    }
+
+    // --- CollarService edge cases ---
+
+    #[test]
+    fn collar_service_add_duplicate_rejected() {
+        let mut domain = domain_state();
+        let err = CollarService::add(&mut domain, sample_collar("alpha")).unwrap_err();
+        assert!(matches!(err, ControlError::DuplicateCollar(name) if name == "alpha"));
+    }
+
+    #[test]
+    fn collar_service_add_validation_failure() {
+        let mut domain = domain_state();
+        let bad_collar = Collar {
+            name: "".to_string(),
+            collar_id: 1,
+            channel: 0,
+        };
+        let err = CollarService::add(&mut domain, bad_collar).unwrap_err();
+        assert!(matches!(err, ControlError::Validation(_)));
+    }
+
+    #[test]
+    fn collar_service_add_success() {
+        let mut domain = domain_state();
+        let change = CollarService::add(&mut domain, sample_collar("beta")).unwrap();
+        assert_eq!(change.collars.len(), 2);
+        assert!(!change.preset_stopped);
+        assert!(!change.cancel_manual_actions);
+        assert!(change.presets.is_none());
+    }
+
+    #[test]
+    fn collar_service_delete_unknown_rejected() {
+        let mut domain = domain_state();
+        let err = CollarService::delete(&mut domain, "nonexistent".to_string()).unwrap_err();
+        assert!(matches!(err, ControlError::UnknownCollar(name) if name == "nonexistent"));
+    }
+
+    #[test]
+    fn collar_service_delete_referenced_by_preset_rejected() {
+        let mut domain = domain_state();
+        let err = CollarService::delete(&mut domain, "alpha".to_string()).unwrap_err();
+        assert!(matches!(err, ControlError::CollarReferencedByPreset(name) if name == "alpha"));
+    }
+
+    #[test]
+    fn collar_service_delete_unreferenced_succeeds() {
+        let mut domain = domain_state();
+        domain.presets.clear();
+        domain.preset_name = None;
+        let change = CollarService::delete(&mut domain, "alpha".to_string()).unwrap();
+        assert!(change.collars.is_empty());
+    }
+
+    #[test]
+    fn collar_service_update_unknown_rejected() {
+        let mut domain = domain_state();
+        let err =
+            CollarService::update(&mut domain, "nonexistent".to_string(), sample_collar("beta"))
+                .unwrap_err();
+        assert!(matches!(err, ControlError::UnknownCollar(name) if name == "nonexistent"));
+    }
+
+    #[test]
+    fn collar_service_update_duplicate_name_rejected() {
+        let mut domain = domain_state();
+        domain.collars.push(Collar {
+            name: "beta".to_string(),
+            collar_id: 99,
+            channel: 0,
+        });
+        let err =
+            CollarService::update(&mut domain, "alpha".to_string(), sample_collar("beta"))
+                .unwrap_err();
+        assert!(matches!(err, ControlError::DuplicateCollar(name) if name == "beta"));
+    }
+
+    #[test]
+    fn collar_service_update_same_name_no_preset_change() {
+        let mut domain = domain_state();
+        domain.preset_name = None;
+        let updated = Collar {
+            name: "alpha".to_string(),
+            collar_id: 999,
+            channel: 0,
+        };
+        let change = CollarService::update(&mut domain, "alpha".to_string(), updated).unwrap();
+        assert!(change.presets.is_none());
+        assert!(!change.preset_stopped);
+        assert_eq!(change.collars[0].collar_id, 999);
+    }
+
+    // --- PresetService edge cases ---
+
+    #[test]
+    fn preset_service_save_update_by_original_name() {
+        let mut domain = domain_state();
+        domain.preset_name = None;
+        let updated = sample_preset("renamed", "alpha");
+        let change =
+            PresetService::save(&mut domain, Some("preset".to_string()), updated).unwrap();
+        assert_eq!(change.presets.len(), 1);
+        assert_eq!(change.presets[0].name, "renamed");
+    }
+
+    #[test]
+    fn preset_service_save_unknown_original_rejected() {
+        let mut domain = domain_state();
+        let err = PresetService::save(
+            &mut domain,
+            Some("nonexistent".to_string()),
+            sample_preset("new", "alpha"),
+        )
+        .unwrap_err();
+        assert!(matches!(err, ControlError::UnknownPreset(name) if name == "nonexistent"));
+    }
+
+    #[test]
+    fn preset_service_save_duplicate_name_on_rename_rejected() {
+        let mut domain = domain_state();
+        domain.presets.push(sample_preset("second", "alpha"));
+        let err = PresetService::save(
+            &mut domain,
+            Some("preset".to_string()),
+            sample_preset("second", "alpha"),
+        )
+        .unwrap_err();
+        assert!(matches!(err, ControlError::DuplicatePreset(name) if name == "second"));
+    }
+
+    #[test]
+    fn preset_service_save_upsert_existing_by_name() {
+        let mut domain = domain_state();
+        domain.preset_name = None;
+        let updated = sample_preset("preset", "alpha");
+        let change = PresetService::save(&mut domain, None, updated).unwrap();
+        assert_eq!(change.presets.len(), 1);
+        assert_eq!(change.presets[0].name, "preset");
+    }
+
+    #[test]
+    fn preset_service_save_new_appended() {
+        let mut domain = domain_state();
+        domain.preset_name = None;
+        let new = sample_preset("new-preset", "alpha");
+        let change = PresetService::save(&mut domain, None, new).unwrap();
+        assert_eq!(change.presets.len(), 2);
+        assert_eq!(change.presets[1].name, "new-preset");
+    }
+
+    #[test]
+    fn preset_service_delete_unknown_rejected() {
+        let mut domain = domain_state();
+        let err = PresetService::delete(&mut domain, "nonexistent".to_string()).unwrap_err();
+        assert!(matches!(err, ControlError::UnknownPreset(name) if name == "nonexistent"));
+    }
+
+    #[test]
+    fn preset_service_delete_success() {
+        let mut domain = domain_state();
+        let change = PresetService::delete(&mut domain, "preset".to_string()).unwrap();
+        assert!(change.presets.is_empty());
+        assert!(change.preset_stopped);
+    }
+
+    #[test]
+    fn preset_service_reorder_preserves_all() {
+        let mut domain = domain_state();
+        domain.preset_name = None;
+        domain.presets.push(sample_preset("b", "alpha"));
+        domain.presets.push(sample_preset("c", "alpha"));
+        let change =
+            PresetService::reorder(&mut domain, vec!["c".to_string(), "preset".to_string()]);
+        assert_eq!(change.presets[0].name, "c");
+        assert_eq!(change.presets[1].name, "preset");
+        assert_eq!(change.presets[2].name, "b");
+    }
+
+    #[test]
+    fn preset_service_reorder_with_unknown_names() {
+        let mut domain = domain_state();
+        domain.preset_name = None;
+        let change = PresetService::reorder(
+            &mut domain,
+            vec!["unknown".to_string(), "preset".to_string()],
+        );
+        assert_eq!(change.presets.len(), 1);
+        assert_eq!(change.presets[0].name, "preset");
+    }
+
+    // --- SettingsService: reboot detection ---
+
+    #[test]
+    fn settings_service_hardware_change_requires_reboot() {
+        let mut domain = domain_state();
+        let mut settings = domain.device_settings.clone();
+        settings.rf_tx_pin = 99;
+        let change = SettingsService::apply(&mut domain, settings);
+        assert!(change.reboot_required);
+    }
+
+    #[test]
+    fn settings_service_wifi_change_requires_reboot() {
+        let mut domain = domain_state();
+        let mut settings = domain.device_settings.clone();
+        settings.wifi_ssid = "new-ssid".to_string();
+        let change = SettingsService::apply(&mut domain, settings);
+        assert!(change.reboot_required);
+    }
+
+    #[test]
+    fn settings_service_ntp_change_requires_reboot() {
+        let mut domain = domain_state();
+        let mut settings = domain.device_settings.clone();
+        settings.ntp_server = "time.google.com".to_string();
+        let change = SettingsService::apply(&mut domain, settings);
+        assert!(change.reboot_required);
+    }
+
+    #[test]
+    fn settings_service_non_hardware_change_no_reboot() {
+        let mut domain = domain_state();
+        let mut settings = domain.device_settings.clone();
+        settings.remote_control_enabled = !settings.remote_control_enabled;
+        settings.record_event_log = !settings.record_event_log;
+        settings.remote_control_url = "wss://new.example.com/ws".to_string();
+        let change = SettingsService::apply(&mut domain, settings);
+        assert!(!change.reboot_required);
+    }
+
+    #[test]
+    fn settings_service_identical_settings_no_reboot() {
+        let mut domain = domain_state();
+        let settings = domain.device_settings.clone();
+        let change = SettingsService::apply(&mut domain, settings);
+        assert!(!change.reboot_required);
+        assert!(!change.remote_settings_changed);
+        assert!(!change.event_log_changed);
+    }
+
+    // --- remote_control_status_from_settings ---
+
+    #[test]
+    fn remote_control_status_disabled() {
+        let settings = DeviceSettings {
+            remote_control_enabled: false,
+            ..DeviceSettings::default()
+        };
+        let status = super::remote_control_status_from_settings(&settings);
+        assert_eq!(status.status_text, "Off");
+        assert!(!status.connected);
+    }
+
+    #[test]
+    fn remote_control_status_empty_url() {
+        let settings = DeviceSettings {
+            remote_control_enabled: true,
+            remote_control_url: "".to_string(),
+            ..DeviceSettings::default()
+        };
+        let status = super::remote_control_status_from_settings(&settings);
+        assert_eq!(status.status_text, "Missing URL");
+    }
+
+    #[test]
+    fn remote_control_status_invalid_url() {
+        let settings = DeviceSettings {
+            remote_control_enabled: true,
+            remote_control_url: "not-a-url".to_string(),
+            ..DeviceSettings::default()
+        };
+        let status = super::remote_control_status_from_settings(&settings);
+        assert_eq!(status.status_text, "Invalid URL");
+    }
+
+    #[test]
+    fn remote_control_status_valid_url() {
+        let settings = DeviceSettings {
+            remote_control_enabled: true,
+            remote_control_url: "wss://example.com/ws".to_string(),
+            ..DeviceSettings::default()
+        };
+        let status = super::remote_control_status_from_settings(&settings);
+        assert_eq!(status.status_text, "Connecting...");
+    }
+
+    #[test]
+    fn remote_control_status_http_url_invalid() {
+        let settings = DeviceSettings {
+            remote_control_enabled: true,
+            remote_control_url: "https://example.com/ws".to_string(),
+            ..DeviceSettings::default()
+        };
+        let status = super::remote_control_status_from_settings(&settings);
+        assert_eq!(status.status_text, "Invalid URL");
+    }
+
+    // --- ExecutionService edge cases ---
+
+    #[test]
+    fn execution_service_complete_wrong_preset_ignored() {
+        let mut domain = domain_state();
+        assert!(!ExecutionService::complete_preset(&mut domain, "wrong"));
+        assert!(domain.preset_name.is_some());
+    }
+
+    #[test]
+    fn execution_service_stop_preset_when_none_running() {
+        let mut domain = domain_state();
+        domain.preset_name = None;
+        assert!(!ExecutionService::stop_preset(&mut domain));
+    }
+
+    // --- RfDebugService cap ---
+
+    #[test]
+    fn rf_debug_service_caps_at_max() {
+        let mut domain = domain_state();
+        for i in 0..150 {
+            RfDebugService::push_event(
+                &mut domain,
+                RfDebugFrame {
+                    received_at_ms: i,
+                    raw_hex: format!("{i:04X}"),
+                    collar_id: 1,
+                    channel: 0,
+                    mode_raw: 1,
+                    mode: Some(CommandMode::Shock),
+                    intensity: 10,
+                    checksum_ok: true,
+                },
+            );
+        }
+        assert_eq!(domain.rf_debug_events.len(), super::MAX_RF_DEBUG_EVENTS);
+        assert_eq!(domain.rf_debug_events.front().unwrap().received_at_ms, 50);
     }
 }
