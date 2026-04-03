@@ -567,10 +567,10 @@ function renderPresets() {
         <span style="flex:1"></span>
         ${isRunning
           ? '<button class="btn-stop" onclick="stopPreset()">Stop</button>'
-          : `<button class="btn-run" data-action="run-preset" data-name="${esc(p.name)}" ${rfLocked ? 'disabled' : ''}>Run</button>`}
-        <button class="btn-edit" data-action="dup-preset" data-name="${esc(p.name)}" style="background:var(--accent2)">Dup</button>
-        <button class="btn-edit" data-action="edit-preset" data-name="${esc(p.name)}">Edit</button>
-        <button class="btn-del" data-action="delete-preset" data-name="${esc(p.name)}">Del</button>
+          : `<button class="btn-run" data-action="run-preset" data-name="${esc(p.name)}" ${rfLocked ? 'disabled' : ''}>▶️</button>`}
+        <button class="btn-edit" data-action="dup-preset" data-name="${esc(p.name)}" style="background:var(--accent2)">📋</button>
+        <button class="btn-edit" data-action="edit-preset" data-name="${esc(p.name)}">✏️</button>
+        <button class="btn-del" data-action="delete-preset" data-name="${esc(p.name)}">🗑️</button>
       </h3>
       <div style="font-size:0.85em;color:var(--text2);margin-top:6px">${summary}</div>
     `;

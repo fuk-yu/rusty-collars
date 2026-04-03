@@ -507,6 +507,7 @@ function renderEditorStep(track: { steps: EditorPresetStep[]; collar_name: strin
           <option value="random" ${hasDurRange && step.duration_distribution !== "gaussian" ? "selected" : ""}>\u23F1 Random</option>
           <option value="gaussian" ${hasDurRange && step.duration_distribution === "gaussian" ? "selected" : ""}>\u23F1 Gaussian</option>
         </select>
+        <button data-step-copy style="padding:0.3rem 0.6rem" title="Duplicate step">📋</button>
         <button class="danger" data-step-remove style="padding:0.3rem 0.6rem">X</button>
       </div>
       <div class="pe-step-controls">
@@ -533,6 +534,11 @@ function renderEditorStep(track: { steps: EditorPresetStep[]; collar_name: strin
 
   div.querySelector("[data-step-mode]")!.addEventListener("change", (e) => {
     step.mode = (e.target as HTMLSelectElement).value as EditorPresetStep["mode"];
+    renderEditorTracks();
+  });
+
+  div.querySelector("[data-step-copy]")!.addEventListener("click", () => {
+    track.steps.splice(si + 1, 0, JSON.parse(JSON.stringify(step)));
     renderEditorTracks();
   });
 
