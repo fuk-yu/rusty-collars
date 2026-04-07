@@ -1,11 +1,12 @@
 /bad-pcb
 /target
-/.embuild
+# project-local rustup state lives in .rustup; rustup itself is the
+# dispatcher, the toolchain is a Nix-store symlink seeded by flake.nix.
 .cargo-home
 .rustup
-.toolchain-bin
-export-esp.sh
 .direnv
+result
+result-*
 espflash.toml
 partitions.csv
 sdkconfig.defaults

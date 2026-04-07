@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
+# Must be run inside `nix develop` (typically via direnv).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 project_dir="$PWD"
-. "$project_dir/scripts/prepare-toolchain-env.sh"
 
 source "$project_dir/scripts/target-info.sh"
 parse_target_arg "$@"
-activate_target "$project_dir" "$TARGET_NAME"
+setup_build_env "$project_dir" "$TARGET_NAME"
 
 HOST_PORT="${REMAINING_ARGS[0]:-8080}"
 FLASH_IMAGE="target/flash_image.bin"

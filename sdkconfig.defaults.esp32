@@ -1,5 +1,9 @@
 # ESP32-specific settings (layered on top of sdkconfig.defaults)
 
+# Match partitions-4mb.csv (used by target-info.sh for esp32).
+# Without this IDF defaults to 2MB and the partition table won't fit.
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+
 # Ethernet (for QEMU OpenETH virtual NIC)
 CONFIG_ETH_ENABLED=y
 CONFIG_ETH_USE_OPENETH=y

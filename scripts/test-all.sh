@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
+# Must be run inside `nix develop` (typically via direnv).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 project_dir="$PWD"
-. "$project_dir/scripts/prepare-toolchain-env.sh"
 
 source "$project_dir/scripts/target-info.sh"
 
@@ -32,8 +32,8 @@ fi
 
 # --- ESP32 build ---
 echo "[2/4] ESP32 build..."
-activate_target "$project_dir" esp32
-if cargo +esp build --release 2>&1 | tail -1 | grep -q "Finished"; then
+setup_build_env "$project_dir" esp32
+if cargo +esp build --release --target "$TARGET_TRIPLE" 2>&1 | tail -1 | grep -q "Finished"; then
     result "esp32 build" pass
 
     # --- ESP32 QEMU integration tests ---
@@ -50,23 +50,17 @@ fi
 
 # --- ESP32-C6 build ---
 echo "[4/4] ESP32-C6 build..."
-activate_target "$project_dir" esp32c6
-# C6 needs RISC-V tools. Check if riscv32-esp-elf-gcc is available.
-if command -v riscv32-esp-elf-gcc &>/dev/null || find "$project_dir/.embuild" -name "riscv32-esp-elf-gcc" 2>/dev/null | grep -q .; then
-    if ESP_IDF_TOOLS_INSTALL_DIR=fromenv cargo build --release 2>&1 | tail -1 | grep -q "Finished"; then
-        result "esp32c6 build" pass
-    else
-        result "esp32c6 build" fail
-    fi
+setup_build_env "$project_dir" esp32c6
+if cargo +esp build --release --target "$TARGET_TRIPLE" 2>&1 | tail -1 | grep -q "Finished"; then
+    result "esp32c6 build" pass
 else
-    echo "  riscv32-esp-elf-gcc not found. Run: espup install --targets esp32c6"
-    result "esp32c6 build" skip
+    result "esp32c6 build" fail
 fi
 # No QEMU for C6 yet
 result "esp32c6 qemu" skip
 
 # Restore ESP32 as default
-activate_target "$project_dir" esp32
+setup_build_env "$project_dir" esp32
 
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed, $SKIP skipped ==="

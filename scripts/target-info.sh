@@ -14,7 +14,39 @@
 #   ESPFLASH_EXTRA_ARGS - extra args for espflash (e.g. "--no-stub" for P4)
 
 target_info_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-. "$target_info_dir/esp-idf-env.sh"
+
+# Expects to be sourced from inside `nix develop` (typically via direnv).
+# flake.nix populates IDF_PATH, IDF_PYTHON_ENV_PATH, LIBCLANG_PATH and
+# puts xtensa-esp-elf-gcc / riscv32-esp-elf-gcc / idf.py / esptool.py
+# on PATH. Bail loudly if anything is missing OR if the env still
+# points at the legacy .embuild/.rustup tree (stale shell session).
+_target_info_die() {
+  echo "$*" >&2
+  return 1 2>/dev/null || exit 1
+}
+
+[ -n "${IDF_PATH:-}" ] || _target_info_die \
+  "IDF_PATH is unset — open this repo in a direnv-activated shell or run via 'nix develop'."
+
+case "$IDF_PATH" in
+  /nix/store/*) ;;
+  *)
+    _target_info_die "\
+IDF_PATH=$IDF_PATH points outside /nix/store. This usually means your
+shell session predates the Nix-flake migration and still has the old
+.embuild env baked in. Run \`direnv reload\` (or open a fresh shell)
+and try again."
+    ;;
+esac
+
+case "${LIBCLANG_PATH:-}" in
+  /nix/store/*) ;;
+  *)
+    _target_info_die "\
+LIBCLANG_PATH=${LIBCLANG_PATH:-<unset>} points outside /nix/store.
+Stale shell — run \`direnv reload\` or open a fresh shell."
+    ;;
+esac
 
 SUPPORTED_TARGETS="esp32 esp32c6 esp32p4 esp32p4-wifi"
 
@@ -76,12 +108,12 @@ setup_build_env() {
   local project_dir="${1:?setup_build_env requires project dir}"
   resolve_target "${2:?setup_build_env requires target name}"
 
-  # Ensure ESP-IDF checkout matches the version in Cargo.toml
-  _ensure_idf_version "$project_dir"
+  # ESP-IDF version is pinned by flake.nix from Cargo.toml; nothing to ensure.
 
-  # MCU env var for build.rs WiFi cfg detection
+  # MCU env var: required by embuild to disambiguate the IDF target,
+  # and consumed by build.rs for the WiFi cfg toggle.
   case "$TARGET_NAME" in
-    esp32)                export MCU="" ;;
+    esp32)                export MCU="esp32" ;;
     esp32c6)              export MCU="esp32c6" ;;
     esp32p4|esp32p4-wifi) export MCU="esp32p4" ;;
   esac
@@ -118,69 +150,21 @@ partition_table = "$PARTITION_TABLE"
 EOF
 }
 
-_ensure_idf_version() {
-  local project_dir="$1"
-  local wanted
-  local idf_dir
-  local current
-  local needs_bootstrap=false
-
-  wanted=$(grep 'esp_idf_version' "$project_dir/Cargo.toml" | sed 's/.*"\(.*\)"/\1/')
-  [ -n "$wanted" ] || return 0
-
-  idf_dir="$(requested_idf_checkout_path "$project_dir" "$wanted")"
-  if [ ! -d "$idf_dir/.git" ]; then
-    needs_bootstrap=true
-  else
-    current="$(git -C "$idf_dir" describe --tags --exact-match 2>/dev/null || true)"
-    if [ "$current" != "$wanted" ]; then
-      needs_bootstrap=true
-    fi
-  fi
-
-  if [ "$needs_bootstrap" = true ]; then
-    echo "ESP-IDF $wanted not found, running bootstrap-toolchain.sh..."
-    "$project_dir/scripts/bootstrap-toolchain.sh"
-  fi
-}
-
 _target_compiler_path() {
-  local project_dir="${1:?_target_compiler_path requires project dir}"
-  local bindir
-  local compiler
-
   case "$TARGET_NAME" in
-    esp32)
-      bindir="$(find_toolchain_bin_dir "$project_dir" xtensa-esp-elf)"
-      compiler="$bindir/xtensa-esp-elf-gcc"
-      ;;
-    esp32c6|esp32p4|esp32p4-wifi)
-      bindir="$(find_toolchain_bin_dir "$project_dir" riscv32-esp-elf)"
-      compiler="$bindir/riscv32-esp-elf-gcc"
-      ;;
-    *)
-      compiler=""
-      ;;
+    esp32) command -v xtensa-esp-elf-gcc 2>/dev/null || true ;;
+    esp32c6|esp32p4|esp32p4-wifi) command -v riscv32-esp-elf-gcc 2>/dev/null || true ;;
+    *) printf '%s\n' "" ;;
   esac
-
-  if [ -x "$compiler" ]; then
-    printf '%s\n' "$compiler"
-  else
-    printf '%s\n' ""
-  fi
 }
 
 _build_env_fingerprint() {
   local project_dir="${1:?_build_env_fingerprint requires project dir}"
-  local wanted
-  local python_env
   local compiler
   local compiler_version
   local sdkconfig_hash
 
-  wanted="$(load_requested_idf_version "$project_dir")"
-  python_env="$(find_requested_idf_python_env "$project_dir" "$wanted")"
-  compiler="$(_target_compiler_path "$project_dir")"
+  compiler="$(_target_compiler_path)"
   compiler_version=""
   if [ -n "$compiler" ]; then
     compiler_version="$("$compiler" --version | head -1)"
@@ -189,11 +173,14 @@ _build_env_fingerprint() {
   # Hash the generated sdkconfig.defaults for this target.
   sdkconfig_hash="$(sha256sum "$project_dir/sdkconfig.defaults" 2>/dev/null | cut -d' ' -f1)"
 
+  # IDF_PATH and IDF_PYTHON_ENV_PATH are deterministic /nix/store paths
+  # whose hashes change atomically when flake.nix bumps the toolchain,
+  # so they're a complete fingerprint of the environment by themselves.
   cat <<EOF
 target=$TARGET_NAME
 triple=$TARGET_TRIPLE
-idf=$wanted
-python_env=$python_env
+idf_path=$IDF_PATH
+python_env=$IDF_PYTHON_ENV_PATH
 compiler=$compiler
 compiler_version=$compiler_version
 sdkconfig=$sdkconfig_hash
@@ -221,44 +208,22 @@ _invalidate_build_cache() {
 }
 
 find_idf_python() {
-  local project_dir="${1:?find_idf_python requires project dir}"
-  local wanted
-  local python_env
-
-  if [ -n "${IDF_PYTHON_ENV_PATH:-}" ] && [ -x "${IDF_PYTHON_ENV_PATH}/bin/python" ]; then
+  if [ -x "${IDF_PYTHON_ENV_PATH:-}/bin/python" ]; then
     printf '%s\n' "${IDF_PYTHON_ENV_PATH}/bin/python"
     return 0
   fi
-
-  wanted="$(load_requested_idf_version "$project_dir")"
-  python_env="$(find_requested_idf_python_env "$project_dir" "$wanted")"
-  if [ -x "$python_env/bin/python" ]; then
-    printf '%s\n' "$python_env/bin/python"
-    return 0
-  fi
-
-  echo "Missing ESP-IDF python for $wanted under $project_dir/.embuild/espressif/python_env" >&2
+  echo "IDF_PYTHON_ENV_PATH is unset or missing python — open this repo in a direnv-activated shell." >&2
   return 1
 }
 
 find_esptool_py() {
-  local project_dir="${1:?find_esptool_py requires project dir}"
-  local wanted
-  local python_env
-
-  if [ -n "${IDF_PYTHON_ENV_PATH:-}" ] && [ -x "${IDF_PYTHON_ENV_PATH}/bin/esptool.py" ]; then
-    printf '%s\n' "${IDF_PYTHON_ENV_PATH}/bin/esptool.py"
+  local found
+  found="$(command -v esptool.py 2>/dev/null || true)"
+  if [ -n "$found" ]; then
+    printf '%s\n' "$found"
     return 0
   fi
-
-  wanted="$(load_requested_idf_version "$project_dir")"
-  python_env="$(find_requested_idf_python_env "$project_dir" "$wanted")"
-  if [ -x "$python_env/bin/esptool.py" ]; then
-    printf '%s\n' "$python_env/bin/esptool.py"
-    return 0
-  fi
-
-  echo "Missing esptool.py for $wanted under $project_dir/.embuild/espressif/python_env" >&2
+  echo "esptool.py not on PATH — open this repo in a direnv-activated shell." >&2
   return 1
 }
 

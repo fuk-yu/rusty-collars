@@ -25,7 +25,8 @@ PROJECT_DIR="$PWD"
 C6_SERIAL_PORT="${1:?Usage: $0 <serial-port> [--monitor]  (e.g. /dev/ttyUSB0)}"
 MONITOR="${2:-}"
 
-source "$PROJECT_DIR/scripts/esp-idf-env.sh"
+# Must be run inside `nix develop` (typically via direnv).
+[ -n "${IDF_PATH:-}" ] || { echo "Open this repo in a direnv-activated shell." >&2; exit 1; }
 
 # The slave source is bundled inside the esp_hosted component
 SLAVE_SRC=$(find "$PROJECT_DIR/target" -path "*/managed_components/espressif__esp_hosted/slave" -type d | head -1)
