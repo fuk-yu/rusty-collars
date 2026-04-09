@@ -10,7 +10,10 @@ use log::info;
 type EthernetKeepalive =
     esp_idf_svc::eth::BlockingEth<esp_idf_svc::eth::EspEth<'static, esp_idf_svc::eth::OpenEth>>;
 
-#[cfg(not(esp32))]
+#[cfg(esp32p4)]
+type EthernetKeepalive = EthController;
+
+#[cfg(not(any(esp32, esp32p4)))]
 type EthernetKeepalive = ();
 
 /// Returns true if running in QEMU (only used on ESP32 with OpenETH).
@@ -27,16 +30,41 @@ pub fn is_qemu() -> bool {
 #[allow(dead_code)]
 pub enum NetworkHandle {
     #[cfg(has_wifi)]
-    Wifi(crate::wifi::WifiController),
+    Wifi(WifiNetwork),
     Eth(EthernetKeepalive),
     None,
 }
 
+#[cfg(has_wifi)]
+pub struct WifiNetwork {
+    wifi: crate::wifi::WifiController,
+    /// On ESP32-P4 with WiFi companion, ethernet runs alongside WiFi and needs
+    /// its own poll loop for link/DHCP recovery.
+    #[cfg(esp32p4)]
+    eth: Option<EthController>,
+}
+
+#[cfg(has_wifi)]
+impl WifiNetwork {
+    fn poll(&mut self) {
+        self.wifi.poll();
+        #[cfg(esp32p4)]
+        if let Some(eth) = self.eth.as_mut() {
+            eth.poll();
+        }
+    }
+}
+
 impl NetworkHandle {
     pub fn poll(&mut self) {
-        #[cfg(has_wifi)]
-        if let Self::Wifi(wifi) = self {
-            wifi.poll();
+        match self {
+            #[cfg(has_wifi)]
+            Self::Wifi(net) => net.poll(),
+            #[cfg(esp32p4)]
+            Self::Eth(eth) => eth.poll(),
+            #[cfg(not(esp32p4))]
+            Self::Eth(_) => {}
+            Self::None => {}
         }
     }
 
@@ -71,15 +99,125 @@ pub fn connect(
         log::warn!("WiFi board: forcing AP (WiFi client disabled/unconfigured and AP is off)");
     }
     let wifi = crate::wifi::connect(modem, sys_loop, nvs, settings, force_ap)?;
-    Ok(NetworkHandle::Wifi(wifi))
+    Ok(NetworkHandle::Wifi(WifiNetwork { wifi }))
 }
 
 // --- ESP32-P4: Ethernet via raw ESP-IDF ---
 
-/// Start P4 Ethernet (raw ESP-IDF). Returns the netif handle.
+/// Initial wait for DHCP after starting ethernet, before handing control over
+/// to the background poll loop. Kept short so we don't block boot indefinitely
+/// when the cable / upstream switch is unreachable. Only used on the
+/// ethernet-only path; the WiFi-companion build relies on the WiFi STA's own
+/// blocking startup window for the same purpose.
+#[cfg(all(esp32p4, not(has_wifi)))]
+const ETH_BOOT_DHCP_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
+
+#[cfg(esp32p4)]
+const ETH_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+
+#[cfg(esp32p4)]
+const ETH_DHCP_KICK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Background controller for the raw ESP-IDF ethernet driver on ESP32-P4.
+///
+/// Owns the eth driver and netif handles, watches for IP / link transitions
+/// and forces a DHCP renegotiation if the link is up but no lease has been
+/// obtained. The default ESP-IDF netif glue auto-starts DHCP on
+/// `ETHERNET_EVENT_CONNECTED`, but the kick is a defensive measure for cases
+/// where the upstream switch comes back without producing a clean
+/// disconnect/connect transition (e.g. PoE switch firmware update).
+#[cfg(esp32p4)]
+pub struct EthController {
+    /// Kept so the eth driver lifetime is bound to this struct, even though we
+    /// don't currently issue any commands directly against it.
+    #[allow(dead_code)]
+    eth_handle: esp_idf_svc::sys::esp_eth_handle_t,
+    netif: *mut esp_idf_svc::sys::esp_netif_t,
+    /// Holds a strong ref to the system event loop so it isn't refcounted away
+    /// after `build()` returns. Without this, the ESP-IDF default event loop
+    /// gets `esp_event_loop_delete_default()`'d, the eth driver can no longer
+    /// post `ETHERNET_EVENT_CONNECTED`, the netif glue's auto-DHCP handler
+    /// never runs, and the link can never recover until reboot.
+    #[allow(dead_code)]
+    sys_loop: EspSystemEventLoop,
+    last_logged_ip: u32,
+    next_check_at: std::time::Instant,
+    next_dhcp_kick_at: std::time::Instant,
+}
+
+#[cfg(esp32p4)]
+impl EthController {
+    fn new(
+        eth_handle: esp_idf_svc::sys::esp_eth_handle_t,
+        netif: *mut esp_idf_svc::sys::esp_netif_t,
+        sys_loop: EspSystemEventLoop,
+    ) -> Self {
+        let now = std::time::Instant::now();
+        Self {
+            eth_handle,
+            netif,
+            sys_loop,
+            last_logged_ip: 0,
+            next_check_at: now,
+            next_dhcp_kick_at: now + ETH_DHCP_KICK_INTERVAL,
+        }
+    }
+
+    pub fn poll(&mut self) {
+        use esp_idf_svc::sys::*;
+        use log::warn;
+
+        let now = std::time::Instant::now();
+        if now < self.next_check_at {
+            return;
+        }
+        self.next_check_at = now + ETH_POLL_INTERVAL;
+
+        let mut ip_info: esp_netif_ip_info_t = unsafe { core::mem::zeroed() };
+        let ok =
+            unsafe { esp_netif_get_ip_info(self.netif, &mut ip_info) } == ESP_OK;
+        let ip = if ok { ip_info.ip.addr } else { 0 };
+
+        if ip != self.last_logged_ip {
+            if ip != 0 {
+                info!(
+                    "Ethernet got IP: {}.{}.{}.{}",
+                    ip & 0xFF,
+                    (ip >> 8) & 0xFF,
+                    (ip >> 16) & 0xFF,
+                    (ip >> 24) & 0xFF
+                );
+                // We have a fresh lease — push the next defensive kick out.
+                self.next_dhcp_kick_at = now + ETH_DHCP_KICK_INTERVAL;
+            } else if self.last_logged_ip != 0 {
+                warn!("Ethernet IP lost — waiting for link / DHCP renewal");
+            }
+            self.last_logged_ip = ip;
+        }
+
+        // If we still have no lease and the netif is up, kick the DHCP client.
+        if ip == 0 && now >= self.next_dhcp_kick_at {
+            let netif_up = unsafe { esp_netif_is_netif_up(self.netif) };
+            if netif_up {
+                let err = unsafe { esp_netif_dhcpc_start(self.netif) };
+                if err == ESP_OK {
+                    info!("Ethernet: forced DHCP client restart");
+                } else if err != ESP_ERR_ESP_NETIF_DHCP_ALREADY_STARTED {
+                    warn!("Ethernet: esp_netif_dhcpc_start failed: 0x{err:x}");
+                }
+            }
+            self.next_dhcp_kick_at = now + ETH_DHCP_KICK_INTERVAL;
+        }
+    }
+}
+
+/// Start P4 Ethernet (raw ESP-IDF). Returns the eth driver handle and netif.
 /// Does NOT wait for DHCP — the caller decides whether to block.
 #[cfg(esp32p4)]
-unsafe fn start_p4_ethernet() -> *mut esp_idf_svc::sys::esp_netif_t {
+unsafe fn start_p4_ethernet() -> (
+    esp_idf_svc::sys::esp_eth_handle_t,
+    *mut esp_idf_svc::sys::esp_netif_t,
+) {
     use esp_idf_svc::sys::*;
 
     // Initialize TCP/IP stack and default event loop (required before esp_netif/eth)
@@ -168,7 +306,7 @@ unsafe fn start_p4_ethernet() -> *mut esp_idf_svc::sys::esp_netif_t {
 
     info!("Ethernet started, waiting for IP via DHCP...");
 
-    netif
+    (eth_handle, netif)
 }
 
 /// Wait for an IP address on the given netif via DHCP.
@@ -217,15 +355,24 @@ unsafe fn check_netif_ip(netif: *mut esp_idf_svc::sys::esp_netif_t) -> bool {
 
 #[cfg(all(esp32p4, not(has_wifi)))]
 pub fn connect(
-    _sys_loop: EspSystemEventLoop,
+    sys_loop: EspSystemEventLoop,
     _nvs: EspDefaultNvsPartition,
     _settings: &DeviceSettings,
 ) -> Result<NetworkHandle> {
     info!("ESP32-P4: starting Ethernet...");
-    let netif = unsafe { start_p4_ethernet() };
-    let got_ip = unsafe { wait_netif_ip(netif, std::time::Duration::from_secs(30)) };
-    assert!(got_ip, "Ethernet DHCP timeout (30s)");
-    Ok(NetworkHandle::Eth(()))
+    let (eth_handle, netif) = unsafe { start_p4_ethernet() };
+    // Best-effort initial DHCP wait — does NOT panic on timeout. The poll
+    // loop will keep trying once boot continues.
+    let got_ip = unsafe { wait_netif_ip(netif, ETH_BOOT_DHCP_WAIT) };
+    if !got_ip {
+        log::warn!(
+            "Ethernet: no DHCP lease within {}s at boot — will keep trying in background",
+            ETH_BOOT_DHCP_WAIT.as_secs()
+        );
+    }
+    Ok(NetworkHandle::Eth(EthController::new(
+        eth_handle, netif, sys_loop,
+    )))
 }
 
 // --- ESP32-P4-WiFi: Ethernet + WiFi via companion ESP32-C6 (esp_hosted over SDIO) ---
@@ -242,7 +389,10 @@ pub fn connect(
     settings: &DeviceSettings,
 ) -> Result<NetworkHandle> {
     info!("ESP32-P4-WiFi: starting Ethernet...");
-    let eth_netif = unsafe { start_p4_ethernet() };
+    let (eth_handle, eth_netif) = unsafe { start_p4_ethernet() };
+    // Hold a clone for the EthController so the default event loop survives
+    // even if WiFi later releases its own ref.
+    let eth_sys_loop = sys_loop.clone();
 
     info!("ESP32-P4-WiFi: starting WiFi...");
     let sta_will = crate::wifi::sta_will_connect(settings);
@@ -277,7 +427,8 @@ pub fn connect(
         wifi.force_enable_ap(settings)?;
     }
 
-    Ok(NetworkHandle::Wifi(wifi))
+    let eth = Some(EthController::new(eth_handle, eth_netif, eth_sys_loop));
+    Ok(NetworkHandle::Wifi(WifiNetwork { wifi, eth }))
 }
 
 // --- ESP32-C6 and others: WiFi only ---
@@ -300,7 +451,7 @@ pub fn connect(
         log::warn!("WiFi-only board: forcing AP (WiFi client disabled/unconfigured and AP is off)");
     }
     let wifi = crate::wifi::connect(modem, sys_loop, nvs, settings, force_ap)?;
-    Ok(NetworkHandle::Wifi(wifi))
+    Ok(NetworkHandle::Wifi(WifiNetwork { wifi }))
 }
 
 // --- OpenETH (QEMU virtual Ethernet, ESP32 only) ---
