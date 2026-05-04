@@ -37,6 +37,10 @@ fn main() {
     let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR not set");
     let gz_path = std::path::Path::new(&out_dir).join("frontend.html.gz");
     std::fs::write(&gz_path, &compressed).expect("write frontend.html.gz failed");
+    // Raw HTML is also embedded so the server can serve identity bodies to
+    // clients that do not advertise gzip support (RFC 9110 §12.5.3).
+    let raw_path = std::path::Path::new(&out_dir).join("frontend.html");
+    std::fs::write(&raw_path, html.as_bytes()).expect("write frontend.html failed");
     println!(
         "cargo:warning=Frontend: {}B raw -> {}B gzip ({:.0}% reduction)",
         html.len(),
