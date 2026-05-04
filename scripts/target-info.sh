@@ -98,6 +98,15 @@ resolve_target() {
       ;;
   esac
 
+  # MQTT is enabled by default; --no-mqtt disables it
+  if [[ "${OPT_NO_MQTT:-false}" != true ]]; then
+    if [[ -n "$CARGO_FEATURES" ]]; then
+      CARGO_FEATURES="$CARGO_FEATURES --features mqtt"
+    else
+      CARGO_FEATURES="--features mqtt"
+    fi
+  fi
+
   TARGET_BINARY="target/${TARGET_TRIPLE}/release/rusty-collars"
   IDF_BUILD_DIR="target/${TARGET_TRIPLE}/release/build/esp-idf-sys-*/out/build"
 }
@@ -235,6 +244,7 @@ parse_target_arg() {
   OPT_CLEAN=false
   OPT_BOOTLOADER=false
   OPT_MONITOR=false
+  OPT_NO_MQTT=false
   REMAINING_ARGS=()
 
   while [[ $# -gt 0 ]]; do
@@ -253,6 +263,10 @@ parse_target_arg() {
         ;;
       --monitor)
         OPT_MONITOR=true
+        shift
+        ;;
+      --no-mqtt)
+        OPT_NO_MQTT=true
         shift
         ;;
       *)

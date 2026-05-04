@@ -66,6 +66,9 @@ impl ws::WebSocketCallbackWithState<ConnectionState> for WsHandler {
                     if event.is_rf_debug() && !listening_rf_debug {
                         continue;
                     }
+                    if event.is_action_fired() {
+                        continue;
+                    }
                     let json = event.json();
                     tx.send_text(&json).await?;
                 }

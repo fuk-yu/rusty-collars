@@ -4,7 +4,8 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     ApStatus, ButtonAction, CommandMode, DeviceSettings, Distribution, EventLogEntry, ExportData,
-    InterfaceStatus, MemoryRegion, Preset, PresetPreview, RemoteControlStatus, RfDebugFrame,
+    InterfaceStatus, MemoryRegion, MqttStatus, Preset, PresetPreview, RemoteControlStatus,
+    RfDebugFrame,
 };
 
 #[derive(Debug, Deserialize)]
@@ -140,6 +141,9 @@ pub enum ServerMessage<'a> {
     },
     RemoteControlStatus {
         status: RemoteControlStatus,
+    },
+    MqttStatus {
+        status: MqttStatus,
     },
     EventLogState {
         enabled: bool,

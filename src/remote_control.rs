@@ -217,7 +217,7 @@ fn run_event_loop(
 
         if connected {
             while let Ok(event) = broadcast_rx.try_recv() {
-                if event.is_rf_debug() {
+                if event.is_rf_debug() || event.is_action_fired() {
                     continue;
                 }
 

@@ -7,7 +7,8 @@ use rand::SeedableRng;
 
 use crate::led::Led;
 use crate::protocol::{
-    Collar, DeviceSettings, EventLogEntryKind, EventSource, ExportData, Preset, RemoteControlStatus,
+    Collar, CommandMode, DeviceSettings, EventLogEntryKind, EventSource, ExportData, MqttStatus,
+    Preset, RemoteControlStatus,
 };
 use crate::repository::RepositoryServices;
 use crate::rf::{RfReceiver, RfTransmitter};
@@ -49,6 +50,7 @@ impl AppCtx {
         presets: Vec<Preset>,
     ) -> Self {
         let remote_control_status = status::remote_control_status_from_settings(&device_settings);
+        let mqtt_status = status::mqtt_status_from_settings(&device_settings);
         let (app_tx, app_rx) = mpsc::channel();
         let (transmission_tx, transmission_rx) = std::sync::mpsc::channel();
         Self {
@@ -61,6 +63,7 @@ impl AppCtx {
                 rf_debug_events: Default::default(),
                 event_log_events: Vec::new(),
                 remote_control_status,
+                mqtt_status,
             })),
             repository_services,
             hardware: HardwareCtx {
@@ -74,6 +77,7 @@ impl AppCtx {
                 _broadcast_keepalive: broadcast_keepalive,
                 ws_clients: Arc::new(Mutex::new(Vec::new())),
                 remote_control_settings_revision: Arc::new(AtomicU32::new(0)),
+                mqtt_settings_revision: Arc::new(AtomicU32::new(0)),
             },
             worker: WorkerCtx {
                 app_tx,
@@ -167,6 +171,18 @@ impl AppCtx {
     pub(crate) fn bump_remote_control_settings_revision(&self) {
         self.sessions
             .remote_control_settings_revision
+            .fetch_add(1, Ordering::SeqCst);
+    }
+
+    pub(crate) fn mqtt_settings_revision(&self) -> u32 {
+        self.sessions
+            .mqtt_settings_revision
+            .load(Ordering::SeqCst)
+    }
+
+    pub(crate) fn bump_mqtt_settings_revision(&self) {
+        self.sessions
+            .mqtt_settings_revision
             .fetch_add(1, Ordering::SeqCst);
     }
 
@@ -446,10 +462,11 @@ impl AppCtx {
         ]
     }
 
-    pub(crate) fn local_ui_sync_events(&self, listening_rf_debug: bool) -> [AppEvent; 4] {
+    pub(crate) fn local_ui_sync_events(&self, listening_rf_debug: bool) -> [AppEvent; 5] {
         [
             self.state_event(),
             self.remote_control_status_event(),
+            self.mqtt_status_event(),
             self.event_log_state_event(),
             self.rf_debug_state_event(listening_rf_debug),
         ]
@@ -457,6 +474,28 @@ impl AppCtx {
 
     pub(crate) fn set_remote_control_status(&self, status: RemoteControlStatus) {
         self.send_app_command(AppCommand::SetRemoteControlStatus { status });
+    }
+
+    pub(crate) fn set_mqtt_status(&self, status: MqttStatus) {
+        self.send_app_command(AppCommand::SetMqttStatus { status });
+    }
+
+    pub(crate) fn mqtt_status_event(&self) -> AppEvent {
+        let status = self.with_domain(|domain| domain.mqtt_status.clone());
+        AppEvent::MqttStatus { status }
+    }
+
+    pub(crate) fn broadcast_action_fired(
+        &self,
+        collar_name: String,
+        mode: CommandMode,
+        intensity: u8,
+    ) {
+        self.broadcast_event(AppEvent::ActionFired {
+            collar_name,
+            mode,
+            intensity,
+        });
     }
 
     pub(crate) fn record_event(&self, source: EventSource, kind: EventLogEntryKind) {

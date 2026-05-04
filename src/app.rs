@@ -9,6 +9,8 @@ use log::info;
 
 use crate::build_info::APP_VERSION;
 use crate::led::Led;
+#[cfg(has_mqtt)]
+use crate::mqtt::{self, MqttHandle};
 use crate::net::{self, NetworkHandle};
 use crate::remote_control::{self, RemoteControlHandle};
 use crate::repository::{RepositoryServices, SharedRepository};
@@ -31,6 +33,8 @@ pub struct RunningApplication {
     _app_worker: AppWorkerHandle,
     _time_sync: Option<TimeSyncHandle>,
     _remote_control: Option<RemoteControlHandle>,
+    #[cfg(has_mqtt)]
+    _mqtt: Option<MqttHandle>,
     _transmission_worker: TransmissionWorkerHandle,
     _server: ServerHandle,
 }
@@ -202,6 +206,20 @@ impl Application {
             None
         };
 
+        #[cfg(has_mqtt)]
+        let mqtt = if background_services_enabled {
+            match mqtt::start(ctx.clone()) {
+                Ok(handle) => Some(handle),
+                Err(err) => {
+                    log::warn!("MQTT worker failed to start: {err:#}");
+                    None
+                }
+            }
+        } else {
+            info!("Skipping MQTT because this target has no network stack");
+            None
+        };
+
         let transmission_worker = server::start_transmission_worker(ctx.clone());
         let server_ctx = ctx.clone();
         let server_join = std::thread::Builder::new()
@@ -220,6 +238,8 @@ impl Application {
             _app_worker: app_worker,
             _time_sync: time_sync,
             _remote_control: remote_control,
+            #[cfg(has_mqtt)]
+            _mqtt: mqtt,
             _transmission_worker: transmission_worker,
             _server: ServerHandle { _join: server_join },
         })

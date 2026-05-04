@@ -1,6 +1,6 @@
 use crate::protocol::{
-    ApClientInfo, ApStatus, DeviceSettings, InterfaceStatus, MemoryRegion, RemoteControlStatus,
-    ServerMessage,
+    ApClientInfo, ApStatus, DeviceSettings, InterfaceStatus, MemoryRegion, MqttStatus,
+    RemoteControlStatus, ServerMessage,
 };
 
 use super::RemoteControlUrlKind;
@@ -66,6 +66,36 @@ pub(super) fn remote_control_status_from_settings(
         "Connecting..."
     };
     remote_control_status(settings, false, None, status_text)
+}
+
+pub(super) fn mqtt_status_from_settings(settings: &DeviceSettings) -> MqttStatus {
+    let status_text = if !settings.mqtt_enabled {
+        "Off"
+    } else if settings.mqtt_server.trim().is_empty() {
+        "Missing server"
+    } else {
+        "Connecting..."
+    };
+
+    MqttStatus {
+        enabled: settings.mqtt_enabled,
+        connected: false,
+        server: settings.mqtt_server.trim().to_string(),
+        status_text: status_text.to_string(),
+    }
+}
+
+pub(crate) fn mqtt_status(
+    settings: &DeviceSettings,
+    connected: bool,
+    status_text: impl Into<String>,
+) -> MqttStatus {
+    MqttStatus {
+        enabled: settings.mqtt_enabled,
+        connected,
+        server: settings.mqtt_server.trim().to_string(),
+        status_text: status_text.into(),
+    }
 }
 
 pub(super) fn gather_network_status(settings: &DeviceSettings) -> ServerMessage<'static> {

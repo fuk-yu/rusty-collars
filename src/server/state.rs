@@ -9,7 +9,7 @@ pub(crate) use rusty_collars_app::DomainState;
 use crate::led::Led;
 use crate::protocol::{
     Collar, CommandMode, DeviceSettings, EventLogEntry, EventLogEntryKind, EventSource, ExportData,
-    Preset, RemoteControlStatus, RfDebugFrame, ServerMessage,
+    MqttStatus, Preset, RemoteControlStatus, RfDebugFrame, ServerMessage,
 };
 use crate::rf::{RfReceiver, RfTransmitter};
 
@@ -41,11 +41,23 @@ pub(crate) enum AppEvent {
     EventLogEvent {
         event: EventLogEntry,
     },
+    MqttStatus {
+        status: MqttStatus,
+    },
+    ActionFired {
+        collar_name: String,
+        mode: CommandMode,
+        intensity: u8,
+    },
 }
 
 impl AppEvent {
     pub(crate) fn is_rf_debug(&self) -> bool {
         matches!(self, Self::RfDebugState { .. } | Self::RfDebugEvent { .. })
+    }
+
+    pub(crate) fn is_action_fired(&self) -> bool {
+        matches!(self, Self::ActionFired { .. })
     }
 
     pub(crate) fn json(&self) -> Arc<str> {
@@ -94,6 +106,14 @@ impl AppEvent {
             Self::EventLogEvent { event } => {
                 serde_json::to_string(&ServerMessage::EventLogEvent { event }).unwrap()
             }
+            Self::MqttStatus { status } => {
+                serde_json::to_string(&ServerMessage::MqttStatus {
+                    status: status.clone(),
+                })
+                .unwrap()
+            }
+            // ActionFired is consumed only by the MQTT worker, not serialized to WS clients
+            Self::ActionFired { .. } => return Arc::from(""),
         })
     }
 }
@@ -102,6 +122,7 @@ impl AppEvent {
 pub(crate) enum MessageOrigin {
     LocalUi,
     RemoteControl,
+    Mqtt,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -114,6 +135,7 @@ pub(crate) struct ActionKey {
 pub(crate) enum ActionOwner {
     LocalWs(u32),
     RemoteControl,
+    Mqtt,
 }
 
 pub(crate) struct ActiveActionHandle {
@@ -205,6 +227,9 @@ pub(crate) enum AppCommand {
     SetRemoteControlStatus {
         status: RemoteControlStatus,
     },
+    SetMqttStatus {
+        status: MqttStatus,
+    },
     RecordEvent {
         source: EventSource,
         kind: EventLogEntryKind,
@@ -236,6 +261,7 @@ pub struct SessionCtx {
     pub(crate) _broadcast_keepalive: InactiveReceiver<AppEvent>,
     pub ws_clients: Arc<Mutex<Vec<(u32, String)>>>,
     pub remote_control_settings_revision: Arc<AtomicU32>,
+    pub mqtt_settings_revision: Arc<AtomicU32>,
 }
 
 #[derive(Clone)]

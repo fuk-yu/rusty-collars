@@ -3,8 +3,8 @@ use std::collections::HashMap;
 use anyhow::Result;
 
 use rusty_collars_core::protocol::{
-    Collar, DeviceSettings, EventLogEntry, EventLogEntryKind, EventSource, ExportData, Preset,
-    RemoteControlStatus, RfDebugFrame,
+    Collar, DeviceSettings, EventLogEntry, EventLogEntryKind, EventSource, ExportData, MqttStatus,
+    Preset, RemoteControlStatus, RfDebugFrame,
 };
 use rusty_collars_core::validation;
 use url::Url;
@@ -310,6 +310,7 @@ pub struct SettingsChange {
     pub settings: DeviceSettings,
     pub reboot_required: bool,
     pub remote_settings_changed: bool,
+    pub mqtt_settings_changed: bool,
     pub event_log_changed: bool,
 }
 
@@ -324,12 +325,20 @@ impl SettingsService {
             || previous_settings.remote_control_url != settings.remote_control_url
             || previous_settings.remote_control_validate_cert
                 != settings.remote_control_validate_cert;
+        let mqtt_settings_changed = previous_settings.mqtt_enabled != settings.mqtt_enabled
+            || previous_settings.mqtt_server != settings.mqtt_server
+            || previous_settings.mqtt_port != settings.mqtt_port
+            || previous_settings.mqtt_username != settings.mqtt_username
+            || previous_settings.mqtt_password != settings.mqtt_password;
         let event_log_changed = previous_settings.record_event_log != settings.record_event_log;
 
         domain.device_settings = settings.clone();
         if remote_settings_changed {
             domain.remote_control_status =
                 remote_control_status_from_settings(&domain.device_settings);
+        }
+        if mqtt_settings_changed {
+            domain.mqtt_status = mqtt_status_from_settings(&domain.device_settings);
         }
         if !domain.device_settings.record_event_log {
             domain.event_log_events.clear();
@@ -339,6 +348,7 @@ impl SettingsService {
             settings,
             reboot_required,
             remote_settings_changed,
+            mqtt_settings_changed,
             event_log_changed,
         }
     }
@@ -378,6 +388,19 @@ impl RemoteControlService {
             false
         } else {
             domain.remote_control_status = status;
+            true
+        }
+    }
+}
+
+pub struct MqttService;
+
+impl MqttService {
+    pub fn set_status(domain: &mut DomainState, status: MqttStatus) -> bool {
+        if domain.mqtt_status == status {
+            false
+        } else {
+            domain.mqtt_status = status;
             true
         }
     }
@@ -461,6 +484,11 @@ fn device_settings_reboot_required(previous: &DeviceSettings, next: &DeviceSetti
         remote_control_url: _,
         remote_control_validate_cert: _,
         record_event_log: _,
+        mqtt_enabled: _,
+        mqtt_server: _,
+        mqtt_port: _,
+        mqtt_username: _,
+        mqtt_password: _,
     } = previous;
 
     *tx_led_pin != next.tx_led_pin
@@ -495,6 +523,23 @@ fn remote_control_status_from_settings(settings: &DeviceSettings) -> RemoteContr
         url: trimmed_url.to_string(),
         validate_cert: settings.remote_control_validate_cert,
         rtt_ms: None,
+        status_text: status_text.to_string(),
+    }
+}
+
+fn mqtt_status_from_settings(settings: &DeviceSettings) -> MqttStatus {
+    let status_text = if !settings.mqtt_enabled {
+        "Off"
+    } else if settings.mqtt_server.trim().is_empty() {
+        "Missing server"
+    } else {
+        "Connecting..."
+    };
+
+    MqttStatus {
+        enabled: settings.mqtt_enabled,
+        connected: false,
+        server: settings.mqtt_server.trim().to_string(),
         status_text: status_text.to_string(),
     }
 }
@@ -648,6 +693,7 @@ mod tests {
             rf_debug_events: VecDeque::new(),
             event_log_events: Vec::new(),
             remote_control_status: RemoteControlStatus::default(),
+            mqtt_status: Default::default(),
         }
     }
 

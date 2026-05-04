@@ -8,6 +8,8 @@ mod async_runtime;
 mod build_info;
 mod error;
 mod led;
+#[cfg(has_mqtt)]
+mod mqtt;
 #[allow(unexpected_cfgs)]
 mod net;
 mod ota;

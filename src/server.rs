@@ -26,7 +26,8 @@ const VALID_UNIX_TIME_THRESHOLD_MS: u64 = 946_684_800_000;
 
 pub use context::{AppCtx, ConnectionState};
 pub(crate) use control::{
-    cancel_owned_manual_actions, local_ui_dispatcher, pong_json, remote_control_dispatcher,
+    cancel_owned_manual_actions, local_ui_dispatcher, mqtt_dispatcher, pong_json,
+    remote_control_dispatcher,
 };
 pub use runtime::{
     run_server, start_app_worker, start_transmission_worker, AppWorkerHandle,
@@ -37,7 +38,7 @@ pub(crate) use state::{
     HardwareCtx, MessageOrigin, RemoteControlUrlKind, SessionCtx, TransmissionCommand, WorkerCtx,
 };
 pub(crate) use status::{
-    parse_remote_control_url, remote_control_endpoint_url, remote_control_status,
+    mqtt_status, parse_remote_control_url, remote_control_endpoint_url, remote_control_status,
 };
 
 type ControlResult = core::result::Result<Vec<String>, ControlError>;
@@ -128,6 +129,7 @@ fn event_source(origin: MessageOrigin) -> EventSource {
     match origin {
         MessageOrigin::LocalUi => EventSource::LocalUi,
         MessageOrigin::RemoteControl => EventSource::RemoteControl,
+        MessageOrigin::Mqtt => EventSource::Mqtt,
     }
 }
 

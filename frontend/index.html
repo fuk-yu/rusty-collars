@@ -18,6 +18,7 @@
     <div class="indicators" id="indicators">
       <span><span class="dot off" id="dot"></span> <span id="conn-text">Connecting...</span></span>
       <span id="remote-conn-text">&#x2197; off</span>
+      <span id="mqtt-conn-text"></span>
       <span id="uptime-text"></span>
       <span class="clients-wrapper" id="clients-wrapper"><span id="clients-text"></span><div class="clients-tooltip" id="clients-tooltip"></div></span>
       <span id="heap-text"></span>
@@ -144,6 +145,28 @@
     </div>
     <div class="form-row" id="settings-remote-control-validate-row">
       <label style="min-width:auto"><input type="checkbox" id="settings-remote-control-validate-cert"> Validate TLS certificate for wss://</label>
+    </div>
+  </div>
+  <div class="card">
+    <h3>MQTT / Home Assistant</h3>
+    <div class="form-row" style="margin-top:8px">
+      <label style="min-width:auto"><input type="checkbox" id="settings-mqtt-enabled" onchange="updateMqttSettingsUi()"> Enable MQTT</label>
+    </div>
+    <div class="form-row" id="settings-mqtt-server-row">
+      <label>Server</label>
+      <input type="text" id="settings-mqtt-server" placeholder="192.168.1.100">
+    </div>
+    <div class="form-row" id="settings-mqtt-port-row">
+      <label>Port</label>
+      <input type="number" id="settings-mqtt-port" min="1" max="65535" style="width:80px" value="1883">
+    </div>
+    <div class="form-row" id="settings-mqtt-username-row">
+      <label>Username</label>
+      <input type="text" id="settings-mqtt-username" placeholder="(optional)">
+    </div>
+    <div class="form-row" id="settings-mqtt-password-row">
+      <label>Password</label>
+      <input type="password" id="settings-mqtt-password" placeholder="(optional)">
     </div>
   </div>
   <div class="card">

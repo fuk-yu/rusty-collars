@@ -7,6 +7,7 @@ use super::{CommandMode, Preset};
 pub enum EventSource {
     LocalUi,
     RemoteControl,
+    Mqtt,
     System,
 }
 

@@ -28,6 +28,7 @@ pub(super) fn send_command(
     ) {
         error!("RF send error: {err:#}");
     }
+    ctx.broadcast_action_fired(collar_name, mode, intensity);
     Ok(Vec::new())
 }
 
@@ -234,7 +235,10 @@ fn start_manual_action(
     let deadline =
         actual_duration_ms.map(|duration_ms| now + Duration::from_millis(duration_ms as u64));
 
-    let key = ActionKey { collar_name, mode };
+    let key = ActionKey {
+        collar_name: collar_name.clone(),
+        mode,
+    };
     let handle = ActiveActionHandle {
         owner,
         cancel_on_disconnect,
@@ -248,5 +252,6 @@ fn start_manual_action(
     };
 
     ctx.set_manual_action(key, handle);
+    ctx.broadcast_action_fired(collar_name, mode, actual_intensity);
     Ok(())
 }

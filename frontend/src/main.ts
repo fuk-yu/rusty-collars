@@ -22,6 +22,7 @@ const MODE_LABEL = { shock: 'Shock', vibrate: 'Vibrate', beep: 'Beep', pause: 'P
 let ws: WebSocket | null = null;
 let state: any = { device_id: null, app_version: null, collars: [], presets: [], preset_running: null, rf_lockout_remaining_ms: 0, device_settings: null };
 let remoteStatus: any = { enabled: false, connected: false, url: '', validate_cert: true, rtt_ms: null, status_text: 'Off' };
+let mqttStatus: any = { enabled: false, connected: false, server: '', status_text: 'Off' };
 let eventLog: any = { enabled: false, events: [] };
 let rfDebug: any = { listening: false, events: [] };
 let rfDebugWanted = false;
@@ -67,6 +68,21 @@ function renderRemoteControlStatus() {
     return;
   }
   el.textContent = '\u2197 ' + (remoteStatus.status_text || 'down');
+}
+
+function renderMqttStatus() {
+  const el = document.getElementById('mqtt-conn-text');
+  if (!el) return;
+  el.title = mqttStatus.server || '';
+  if (!mqttStatus.enabled) {
+    el.textContent = '';
+    return;
+  }
+  if (mqttStatus.connected) {
+    el.textContent = 'mqtt: ok';
+    return;
+  }
+  el.textContent = 'mqtt: ' + (mqttStatus.status_text || 'down');
 }
 
 function formatUptime(totalSeconds: number) {
@@ -248,6 +264,10 @@ function connect() {
         remoteStatus = msg.status;
         renderRemoteControlStatus();
         break;
+      case 'mqtt_status':
+        mqttStatus = msg.status;
+        renderMqttStatus();
+        break;
       case 'event_log_state':
         eventLog = { enabled: !!msg.enabled, events: msg.events || [] };
         renderEventLog();
@@ -322,6 +342,7 @@ function render() {
   renderClients();
   renderHeap();
   renderRemoteControlStatus();
+  renderMqttStatus();
   renderStopAllButton();
   renderRemotes();
   renderPresets();
@@ -983,6 +1004,15 @@ function updateRemoteControlSettingsUi() {
   validateInput.disabled = !enabled || !isWss;
 }
 
+function updateMqttSettingsUi() {
+  const enabled = (document.getElementById('settings-mqtt-enabled') as HTMLInputElement).checked;
+  for (const id of ['settings-mqtt-server-row', 'settings-mqtt-port-row', 'settings-mqtt-username-row', 'settings-mqtt-password-row']) {
+    const row = document.getElementById(id)!;
+    row.classList.toggle('settings-disabled', !enabled);
+    row.querySelectorAll('input').forEach(input => (input as HTMLInputElement).disabled = !enabled);
+  }
+}
+
 function rebootDevice() {
   if (!confirm('Reboot the device? Active connections will be dropped.')) return;
   send({ type: 'reboot' });
@@ -1038,6 +1068,11 @@ function saveDeviceSettings() {
       remote_control_url: remoteControlUrl,
       remote_control_validate_cert: remoteControlValidateCert,
       record_event_log: (document.getElementById('settings-record-event-log') as HTMLInputElement).checked,
+      mqtt_enabled: (document.getElementById('settings-mqtt-enabled') as HTMLInputElement).checked,
+      mqtt_server: (document.getElementById('settings-mqtt-server') as HTMLInputElement).value.trim(),
+      mqtt_port: parseInt((document.getElementById('settings-mqtt-port') as HTMLInputElement).value) || 1883,
+      mqtt_username: (document.getElementById('settings-mqtt-username') as HTMLInputElement).value,
+      mqtt_password: (document.getElementById('settings-mqtt-password') as HTMLInputElement).value,
     }
   });
 }
@@ -1064,9 +1099,15 @@ function handleDeviceSettings(msg: any) {
   (document.getElementById('settings-remote-control-url') as HTMLInputElement).value = s.remote_control_url || '';
   (document.getElementById('settings-remote-control-validate-cert') as HTMLInputElement).checked = s.remote_control_validate_cert !== false;
   (document.getElementById('settings-record-event-log') as HTMLInputElement).checked = !!s.record_event_log;
+  (document.getElementById('settings-mqtt-enabled') as HTMLInputElement).checked = !!s.mqtt_enabled;
+  (document.getElementById('settings-mqtt-server') as HTMLInputElement).value = s.mqtt_server || '';
+  (document.getElementById('settings-mqtt-port') as HTMLInputElement).value = s.mqtt_port || 1883;
+  (document.getElementById('settings-mqtt-username') as HTMLInputElement).value = s.mqtt_username || '';
+  (document.getElementById('settings-mqtt-password') as HTMLInputElement).value = s.mqtt_password || '';
   updateWifiClientSettingsUi();
   updateNtpSettingsUi();
   updateRemoteControlSettingsUi();
+  updateMqttSettingsUi();
   const statusEl = document.getElementById('settings-status')!;
   if (msg.reboot_required) {
     statusEl.textContent = 'Saved. Reboot required to apply changes.';
@@ -1467,6 +1508,7 @@ w.runStressTest = runStressTest;
 w.updateWifiClientSettingsUi = updateWifiClientSettingsUi;
 w.updateRemoteControlSettingsUi = updateRemoteControlSettingsUi;
 w.updateNtpSettingsUi = updateNtpSettingsUi;
+w.updateMqttSettingsUi = updateMqttSettingsUi;
 w.saveDeviceSettings = saveDeviceSettings;
 w.rebootDevice = rebootDevice;
 w.startOta = startOta;
@@ -1484,6 +1526,7 @@ w.stopPreset = stopPreset;
 
 renderAppVersion();
 renderRemoteControlStatus();
+renderMqttStatus();
 renderEventLog();
 connect();
 

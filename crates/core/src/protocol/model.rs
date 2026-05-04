@@ -201,6 +201,25 @@ impl Default for RemoteControlStatus {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MqttStatus {
+    pub enabled: bool,
+    pub connected: bool,
+    pub server: String,
+    pub status_text: String,
+}
+
+impl Default for MqttStatus {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            connected: false,
+            server: String::new(),
+            status_text: "Off".to_string(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExportData {
     pub collars: Vec<Collar>,

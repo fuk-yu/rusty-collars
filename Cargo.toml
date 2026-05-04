@@ -12,6 +12,7 @@ license = "MIT"
 
 [features]
 p4-wifi = []
+mqtt = []
 
 [dependencies]
 rusty-collars-app = { path = "crates/app" }

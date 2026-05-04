@@ -2,13 +2,13 @@ use std::sync::mpsc::{Receiver, SyncSender};
 
 use log::info;
 use rusty_collars_app::{
-    CollarService, DataService, EventLogService, ExecutionService, PresetService,
+    CollarService, DataService, EventLogService, ExecutionService, MqttService, PresetService,
     RemoteControlService, RfDebugService, SettingsService,
 };
 use serde::Serialize;
 
 use crate::protocol::{
-    Collar, DeviceSettings, EventLogEntry, EventLogEntryKind, EventSource, Preset,
+    Collar, DeviceSettings, EventLogEntry, EventLogEntryKind, EventSource, MqttStatus, Preset,
     RemoteControlStatus, RfDebugFrame, ServerMessage,
 };
 use crate::scheduling::PresetEvent;
@@ -71,6 +71,7 @@ fn handle_app_command(ctx: &AppCtx, command: AppCommand) {
         AppCommand::SetRemoteControlStatus { status } => {
             handle_set_remote_control_status(ctx, status)
         }
+        AppCommand::SetMqttStatus { status } => handle_set_mqtt_status(ctx, status),
         AppCommand::RecordEvent { source, kind } => handle_record_event(ctx, source, kind),
         AppCommand::PushRfDebugEvent { event } => handle_push_rf_debug_event(ctx, event),
         AppCommand::ClearRfDebugEvents { listening, reply } => {
@@ -180,10 +181,16 @@ fn handle_save_device_settings(ctx: &AppCtx, settings: DeviceSettings) -> Contro
     if change.remote_settings_changed {
         ctx.bump_remote_control_settings_revision();
     }
+    if change.mqtt_settings_changed {
+        ctx.bump_mqtt_settings_revision();
+    }
     ctx.repository_services().save_settings(&change.settings)?;
 
     if change.remote_settings_changed {
         ctx.broadcast_event(ctx.remote_control_status_event());
+    }
+    if change.mqtt_settings_changed {
+        ctx.broadcast_event(ctx.mqtt_status_event());
     }
     if change.event_log_changed {
         ctx.broadcast_event(ctx.event_log_state_event());
@@ -249,6 +256,14 @@ fn handle_set_remote_control_status(ctx: &AppCtx, status: RemoteControlStatus) {
 
     if changed {
         ctx.broadcast_event(ctx.remote_control_status_event());
+    }
+}
+
+fn handle_set_mqtt_status(ctx: &AppCtx, status: MqttStatus) {
+    let changed = ctx.with_domain_mut(|domain| MqttService::set_status(domain, status));
+
+    if changed {
+        ctx.broadcast_event(ctx.mqtt_status_event());
     }
 }
 

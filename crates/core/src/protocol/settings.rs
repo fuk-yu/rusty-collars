@@ -34,6 +34,16 @@ pub struct DeviceSettings {
     pub remote_control_validate_cert: bool,
     #[serde(default)]
     pub record_event_log: bool,
+    #[serde(default)]
+    pub mqtt_enabled: bool,
+    #[serde(default)]
+    pub mqtt_server: String,
+    #[serde(default = "default_mqtt_port")]
+    pub mqtt_port: u16,
+    #[serde(default)]
+    pub mqtt_username: String,
+    #[serde(default)]
+    pub mqtt_password: String,
 }
 
 fn default_true() -> bool {
@@ -50,6 +60,10 @@ fn default_max_clients() -> u8 {
 
 fn default_ntp_server() -> String {
     "pool.ntp.org".to_string()
+}
+
+fn default_mqtt_port() -> u16 {
+    1883
 }
 
 fn default_rx_led_pin() -> u8 {
@@ -94,6 +108,11 @@ impl Default for DeviceSettings {
             remote_control_url: String::new(),
             remote_control_validate_cert: true,
             record_event_log: false,
+            mqtt_enabled: false,
+            mqtt_server: String::new(),
+            mqtt_port: default_mqtt_port(),
+            mqtt_username: String::new(),
+            mqtt_password: String::new(),
         }
     }
 }

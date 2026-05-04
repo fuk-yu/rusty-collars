@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 
 use rusty_collars_core::protocol::{
-    Collar, DeviceSettings, EventLogEntry, Preset, RemoteControlStatus, RfDebugFrame,
+    Collar, DeviceSettings, EventLogEntry, MqttStatus, Preset, RemoteControlStatus, RfDebugFrame,
 };
 
 #[derive(Debug, Clone)]
@@ -14,4 +14,5 @@ pub struct DomainState {
     pub rf_debug_events: VecDeque<RfDebugFrame>,
     pub event_log_events: Vec<EventLogEntry>,
     pub remote_control_status: RemoteControlStatus,
+    pub mqtt_status: MqttStatus,
 }

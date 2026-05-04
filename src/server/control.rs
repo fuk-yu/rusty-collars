@@ -142,6 +142,10 @@ pub(crate) fn remote_control_dispatcher(ctx: &AppCtx) -> ControlDispatcher<'_> {
     )
 }
 
+pub(crate) fn mqtt_dispatcher(ctx: &AppCtx) -> ControlDispatcher<'_> {
+    ControlDispatcher::new(ctx, MessageOrigin::Mqtt, Some(ActionOwner::Mqtt))
+}
+
 pub(crate) fn pong_json(ctx: &AppCtx, nonce: u32) -> String {
     let client_ips = ctx.client_ips();
 
@@ -163,7 +167,7 @@ fn ensure_local_ui(
     origin: MessageOrigin,
     operation: &'static str,
 ) -> core::result::Result<(), ControlError> {
-    if origin == MessageOrigin::RemoteControl {
+    if origin != MessageOrigin::LocalUi {
         Err(ControlError::LocalUiOnly { operation })
     } else {
         Ok(())

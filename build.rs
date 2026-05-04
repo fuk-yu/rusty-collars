@@ -14,6 +14,9 @@ fn main() {
     if has_wifi {
         println!("cargo:rustc-cfg=has_wifi");
     }
+    if std::env::var("CARGO_FEATURE_MQTT").is_ok() {
+        println!("cargo:rustc-cfg=has_mqtt");
+    }
     println!("cargo:rerun-if-env-changed=MCU");
 
     // Gzip the Vite-built frontend HTML at build time (saves ~29KB heap at runtime).

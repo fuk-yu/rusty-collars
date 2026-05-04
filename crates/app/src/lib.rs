@@ -9,7 +9,7 @@ pub use repository::{
 };
 pub use services::{
     CollarChange, CollarService, DataChange, DataService, EventLogService, ExecutionService,
-    PresetChange, PresetService, RemoteControlService, RepositoryServices, RfDebugService,
-    SettingsChange, SettingsService,
+    MqttService, PresetChange, PresetService, RemoteControlService, RepositoryServices,
+    RfDebugService, SettingsChange, SettingsService,
 };
 pub use state::DomainState;
