@@ -7,8 +7,8 @@ use rand::SeedableRng;
 
 use crate::led::Led;
 use crate::protocol::{
-    Collar, CommandMode, DeviceSettings, EventLogEntryKind, EventSource, ExportData, MqttStatus,
-    Preset, RemoteControlStatus,
+    ClientInfo, Collar, CommandMode, DeviceSettings, EventLogEntryKind, EventSource, ExportData,
+    MqttStatus, Preset, RemoteControlStatus,
 };
 use crate::repository::RepositoryServices;
 use crate::rf::{RfReceiver, RfTransmitter};
@@ -132,12 +132,12 @@ impl AppCtx {
         })
     }
 
-    pub(crate) fn register_ws_client(&self, conn_id: u32, conn_addr: String) {
+    pub(crate) fn register_ws_client(&self, conn_id: u32, info: ClientInfo) {
         self.sessions
             .ws_clients
             .lock()
             .unwrap()
-            .push((conn_id, conn_addr));
+            .push((conn_id, info));
     }
 
     pub(crate) fn unregister_ws_client(&self, conn_id: u32) {
@@ -148,13 +148,13 @@ impl AppCtx {
             .retain(|(id, _)| *id != conn_id);
     }
 
-    pub(crate) fn client_ips(&self) -> Vec<String> {
+    pub(crate) fn ws_clients_snapshot(&self) -> Vec<ClientInfo> {
         self.sessions
             .ws_clients
             .lock()
             .unwrap()
             .iter()
-            .map(|(_, addr)| addr.clone())
+            .map(|(_, info)| info.clone())
             .collect()
     }
 

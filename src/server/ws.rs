@@ -4,7 +4,7 @@ use log::{info, warn};
 use picoserve::futures::Either;
 use picoserve::response::ws::{self, Message};
 
-use crate::protocol::ClientMessage;
+use crate::protocol::{ClientInfo, ClientMessage};
 
 use super::{
     cancel_owned_manual_actions, error_json, local_ui_dispatcher, ActionOwner, ConnectionState,
@@ -12,7 +12,10 @@ use super::{
 
 const WS_BUF_SIZE: usize = 2048;
 
-pub(super) struct WsHandler;
+pub(super) struct WsHandler {
+    pub forwarded_for: Option<String>,
+    pub user_agent: Option<String>,
+}
 
 impl ws::WebSocketCallbackWithState<ConnectionState> for WsHandler {
     async fn run_with_state<R: picoserve::io::Read, W: picoserve::io::Write<Error = R::Error>>(
@@ -26,7 +29,14 @@ impl ws::WebSocketCallbackWithState<ConnectionState> for WsHandler {
         let ws_addr = state.conn_addr.clone();
         info!("[#{ws_id}] WebSocket connected from {ws_addr}");
 
-        ctx.register_ws_client(ws_id, ws_addr.clone());
+        ctx.register_ws_client(
+            ws_id,
+            ClientInfo {
+                ip: ws_addr.clone(),
+                forwarded_for: self.forwarded_for,
+                user_agent: self.user_agent,
+            },
+        );
         for event in ctx.local_ui_sync_events(false) {
             let json = event.json();
             tx.send_text(&json).await?;

@@ -147,14 +147,14 @@ pub(crate) fn mqtt_dispatcher(ctx: &AppCtx) -> ControlDispatcher<'_> {
 }
 
 pub(crate) fn pong_json(ctx: &AppCtx, nonce: u32) -> String {
-    let client_ips = ctx.client_ips();
+    let clients = ctx.ws_clients_snapshot();
 
     serde_json::to_string(&ServerMessage::Pong {
         nonce,
         server_uptime_s: super::uptime_seconds(),
         free_heap_bytes: super::free_heap(),
-        connected_clients: client_ips.len() as u32,
-        client_ips,
+        connected_clients: clients.len() as u32,
+        clients,
     })
     .unwrap()
 }

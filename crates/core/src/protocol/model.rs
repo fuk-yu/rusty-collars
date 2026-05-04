@@ -220,6 +220,15 @@ impl Default for MqttStatus {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClientInfo {
+    pub ip: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forwarded_for: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_agent: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExportData {
     pub collars: Vec<Collar>,

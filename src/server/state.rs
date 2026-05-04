@@ -259,7 +259,7 @@ pub struct SessionCtx {
     pub broadcast_tx: BroadcastSender<AppEvent>,
     /// Keeps the broadcast channel alive even when no active receivers exist.
     pub(crate) _broadcast_keepalive: InactiveReceiver<AppEvent>,
-    pub ws_clients: Arc<Mutex<Vec<(u32, String)>>>,
+    pub ws_clients: Arc<Mutex<Vec<(u32, crate::protocol::ClientInfo)>>>,
     pub remote_control_settings_revision: Arc<AtomicU32>,
     pub mqtt_settings_revision: Arc<AtomicU32>,
 }

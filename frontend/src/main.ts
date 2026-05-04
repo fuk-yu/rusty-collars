@@ -117,8 +117,17 @@ function renderClients() {
   el.textContent = '\uD83D\uDC65 ' + state.connected_clients;
   const tooltip = document.getElementById('clients-tooltip');
   if (tooltip) {
-    const ips = state.client_ips || [];
-    tooltip.innerHTML = ips.length ? ips.map((ip: string) => `<div>${ip}</div>`).join('') : '<div>No clients</div>';
+    const clients = state.clients || [];
+    if (!clients.length) {
+      tooltip.innerHTML = '<div>No clients</div>';
+      return;
+    }
+    tooltip.innerHTML = clients.map((c: any) => {
+      const ip = esc(c.ip || '');
+      const xff = c.forwarded_for ? `<div class="ci-row"><span class="ci-k">xff:</span> ${esc(c.forwarded_for)}</div>` : '';
+      const ua = c.user_agent ? `<div class="ci-row ci-ua"><span class="ci-k">ua:</span> ${esc(c.user_agent)}</div>` : '';
+      return `<div class="ci-item"><div class="ci-ip">${ip}</div>${xff}${ua}</div>`;
+    }).join('');
   }
 }
 
@@ -180,7 +189,7 @@ function handlePong(msg: any) {
   if (msg.server_uptime_s != null) state.server_uptime_s = msg.server_uptime_s;
   if (msg.free_heap_bytes != null) state.free_heap_bytes = msg.free_heap_bytes;
   if (msg.connected_clients != null) state.connected_clients = msg.connected_clients;
-  if (msg.client_ips) state.client_ips = msg.client_ips;
+  if (msg.clients) state.clients = msg.clients;
   renderConnectionStatus();
   renderUptime();
   renderClients();
@@ -1530,11 +1539,15 @@ renderMqttStatus();
 renderEventLog();
 connect();
 
-// Tooltip: click/tap to show, click/tap elsewhere to hide
+// Tooltip: click/tap to show, click/tap elsewhere to hide.
+// Clicks inside the tooltip body don't toggle, so users can select text.
 document.addEventListener('click', (e) => {
   const wrapper = document.getElementById('clients-wrapper');
   if (!wrapper) return;
-  if (wrapper.contains(e.target as Node)) {
+  const target = e.target as Node;
+  const tooltip = document.getElementById('clients-tooltip');
+  if (tooltip && tooltip.contains(target)) return;
+  if (wrapper.contains(target)) {
     wrapper.classList.toggle('show-tooltip');
   } else {
     wrapper.classList.remove('show-tooltip');

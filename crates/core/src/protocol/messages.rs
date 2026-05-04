@@ -3,9 +3,9 @@ use std::collections::VecDeque;
 use serde::{Deserialize, Serialize};
 
 use super::{
-    ApStatus, ButtonAction, CommandMode, DeviceSettings, Distribution, EventLogEntry, ExportData,
-    InterfaceStatus, MemoryRegion, MqttStatus, Preset, PresetPreview, RemoteControlStatus,
-    RfDebugFrame,
+    ApStatus, ButtonAction, ClientInfo, CommandMode, DeviceSettings, Distribution, EventLogEntry,
+    ExportData, InterfaceStatus, MemoryRegion, MqttStatus, Preset, PresetPreview,
+    RemoteControlStatus, RfDebugFrame,
 };
 
 #[derive(Debug, Deserialize)]
@@ -127,7 +127,7 @@ pub enum ServerMessage<'a> {
         server_uptime_s: u64,
         free_heap_bytes: u32,
         connected_clients: u32,
-        client_ips: Vec<String>,
+        clients: Vec<ClientInfo>,
     },
     DeviceSettings {
         settings: DeviceSettings,

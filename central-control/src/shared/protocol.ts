@@ -41,13 +41,19 @@ export interface StateMessage {
   rf_lockout_remaining_ms: number;
 }
 
+export interface ClientInfo {
+  ip: string;
+  forwarded_for?: string;
+  user_agent?: string;
+}
+
 export interface PongMessage {
   type: "pong";
   nonce: number;
   server_uptime_s?: number;
   free_heap_bytes?: number;
   connected_clients?: number;
-  client_ips?: string[];
+  clients?: ClientInfo[];
 }
 
 export interface PingMessage {

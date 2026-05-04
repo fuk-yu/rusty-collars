@@ -96,10 +96,19 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 .clients-tooltip {
   display: none; position: absolute; right: 0; top: 100%; margin-top: 4px;
   background: var(--surface); border: 1px solid var(--accent); border-radius: 6px;
-  padding: 6px 10px; font-size: 0.8em; white-space: nowrap; z-index: 200;
+  padding: 6px 10px; font-size: 0.8em; z-index: 200;
   box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+  width: max-content; max-width: min(720px, 96vw); min-width: 320px;
+  white-space: normal; text-align: left;
 }
 .clients-wrapper.show-tooltip .clients-tooltip { display: block; }
+.clients-tooltip .ci-item { padding: 4px 0; border-top: 1px solid var(--surface2); }
+.clients-tooltip .ci-item:first-child { border-top: none; padding-top: 0; }
+.clients-tooltip .ci-item:last-child { padding-bottom: 0; }
+.clients-tooltip .ci-ip { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--text); }
+.clients-tooltip .ci-row { color: var(--text2); margin-top: 2px; word-break: break-all; }
+.clients-tooltip .ci-row.ci-ua { font-size: 0.92em; }
+.clients-tooltip .ci-k { color: var(--accent); margin-right: 4px; }
 
 .mode-select { width: auto; min-width: 0; flex-shrink: 0; font-size: 0.8em; padding: 2px 4px; }
 .range-slider { position: relative; height: 20px; flex: 1; }

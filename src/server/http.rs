@@ -2,10 +2,37 @@ use std::time::Duration;
 
 use anyhow::Result;
 use log::{error, info};
+use picoserve::extract::FromRequestParts;
+use picoserve::request::RequestParts;
 use picoserve::response::ws;
 use picoserve::routing::{get, get_service, post_service};
 
 use super::ConnectionState;
+
+struct WsClientMeta {
+    forwarded_for: Option<String>,
+    user_agent: Option<String>,
+}
+
+impl<'r, S> FromRequestParts<'r, S> for WsClientMeta {
+    type Rejection = core::convert::Infallible;
+
+    async fn from_request_parts(
+        _state: &'r S,
+        request_parts: &RequestParts<'r>,
+    ) -> Result<Self, Self::Rejection> {
+        let header = |name: &str| {
+            request_parts
+                .headers()
+                .get(name)
+                .and_then(|v| v.as_str().ok().map(str::to_owned))
+        };
+        Ok(Self {
+            forwarded_for: header("x-forwarded-for"),
+            user_agent: header("user-agent"),
+        })
+    }
+}
 
 const FRONTEND_HTML_GZ: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/frontend.html.gz"));
 const FAVICON_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="6" fill="#1a1a2e"/><text x="16" y="24" font-size="22" text-anchor="middle">&#x26A1;</text></svg>"##;
@@ -18,9 +45,14 @@ pub(super) fn make_app(
         .route("/ota", post_service(OtaService))
         .route(
             "/ws",
-            get(|upgrade: ws::WebSocketUpgrade| async move {
-                upgrade.on_upgrade_using_state(super::ws::WsHandler)
-            }),
+            get(
+                |meta: WsClientMeta, upgrade: ws::WebSocketUpgrade| async move {
+                    upgrade.on_upgrade_using_state(super::ws::WsHandler {
+                        forwarded_for: meta.forwarded_for,
+                        user_agent: meta.user_agent,
+                    })
+                },
+            ),
         )
 }
 
