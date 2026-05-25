@@ -11,8 +11,38 @@ body { font-family: system-ui, sans-serif; background: var(--bg); color: var(--t
 .header-right { margin-left: auto; text-align: right; line-height: 1.4; flex-shrink: 0; }
 .header-right .version { font-size: 0.75em; color: var(--text2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .header-right .indicators { font-size: 0.8em; color: var(--text2); display: flex; align-items: center; gap: 8px; justify-content: flex-end; }
-.indicators .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 3px; vertical-align: middle; }
+.indicators .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 3px; vertical-align: middle; border: 1px solid transparent; }
 .indicators .dot.on { background: var(--ok); } .indicators .dot.off { background: var(--danger); }
+.indicators .dot[data-state="alive"] { background: var(--ok); border-color: var(--ok); }
+.indicators .dot[data-state="stale"] { background: var(--warn); border-color: var(--warn); animation: ws-pulse 0.9s ease-in-out infinite; }
+.indicators .dot[data-state="connecting"] { background: transparent; border-color: var(--warn); animation: ws-spin 1.4s linear infinite; }
+.indicators .dot[data-state="deferred"] { background: var(--surface2); border-color: var(--text2); }
+.indicators .dot[data-state="terminal"] { background: var(--danger); border-color: var(--danger); position: relative; }
+.indicators .dot[data-state="terminal"]::after { content: "×"; position: absolute; top: -8px; left: 1px; font-size: 12px; color: #fff; line-height: 1; font-weight: bold; }
+.indicators .dot[data-state="dead"] { background: var(--danger); border-color: var(--danger); }
+@keyframes ws-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+@keyframes ws-spin { 0% { border-top-color: var(--accent); transform: rotate(0deg); } 100% { border-top-color: var(--accent); transform: rotate(360deg); } }
+
+/* WS indicator tooltip */
+.ws-wrapper { position: relative; cursor: pointer; display: inline-flex; align-items: center; gap: 4px; }
+.ws-retry { padding: 1px 6px; font-size: 0.75em; background: var(--accent2); color: #fff; border-radius: 4px; cursor: pointer; }
+.ws-tooltip {
+  display: none; position: absolute; right: 0; top: 100%; margin-top: 6px;
+  background: var(--surface); border: 1px solid var(--accent); border-radius: 6px;
+  padding: 8px 10px; font-size: 0.8em; z-index: 250; color: var(--text);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+  width: max-content; max-width: min(560px, 96vw); min-width: 280px;
+  white-space: normal; text-align: left; line-height: 1.4;
+}
+.ws-wrapper.show-tooltip .ws-tooltip { display: block; }
+.ws-tooltip .ws-dim { color: var(--text2); }
+.ws-tooltip .ws-err { color: var(--danger); }
+.ws-tooltip .ws-cards { margin-top: 6px; display: flex; flex-direction: column; gap: 3px; }
+.ws-tooltip .ws-card { padding: 3px 6px; background: rgba(255,255,255,0.04); border-radius: 4px; font-family: ui-monospace, monospace; font-size: 0.92em; }
+.ws-tooltip .ws-card-active { background: rgba(78,204,163,0.15); border-left: 2px solid var(--ok); }
+.ws-tooltip .ws-log { margin-top: 8px; max-height: 200px; overflow-y: auto; font-family: ui-monospace, monospace; font-size: 0.78em; padding-top: 6px; border-top: 1px solid var(--surface2); }
+.ws-tooltip .ws-log-warn { color: var(--warn); }
+.ws-tooltip .ws-log-err { color: var(--danger); }
 
 .tabs { display: flex; background: var(--surface); border-bottom: 1px solid var(--surface2); }
 .tabs button { flex: 1; padding: 10px; border: none; background: none; color: var(--text2); cursor: pointer; font-size: 0.95em; border-bottom: 2px solid transparent; }

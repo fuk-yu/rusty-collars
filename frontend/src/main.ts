@@ -5,53 +5,121 @@ import {
   type PresetEditorConfig,
   type EditorPreset,
 } from "../../ui-shared/preset-editor.js";
+import { WsManager } from "./ws/manager.js";
+import { Indicator } from "./ws/indicator.js";
 
 // === Constants ===
 
 const FRONTEND_APP_VERSION = "__RUSTY_COLLARS_APP_VERSION__";
-const WS_RECONNECT_BASE_DELAY_MS = 500;
-const WS_RECONNECT_MAX_DELAY_MS = 5000;
 const RF_LOCKOUT_TICK_MS = 100;
-const WS_PING_INTERVAL_MS = 1000;
-const WS_PING_TIMEOUT_MS = 3000;
 const MODE_EMOJI = { shock: '\u26A1', vibrate: '\u3030\uFE0F', beep: '\uD83D\uDD0A', pause: '\u23F8\uFE0F' };
 const MODE_LABEL = { shock: 'Shock', vibrate: 'Vibrate', beep: 'Beep', pause: 'Pause' };
 
 // === State ===
 
-let ws: WebSocket | null = null;
 let state: any = { device_id: null, app_version: null, collars: [], presets: [], preset_running: null, rf_lockout_remaining_ms: 0, device_settings: null };
 let remoteStatus: any = { enabled: false, connected: false, url: '', validate_cert: true, rtt_ms: null, status_text: 'Off' };
 let mqttStatus: any = { enabled: false, connected: false, server: '', status_text: 'Off' };
 let eventLog: any = { enabled: false, events: [] };
 let rfDebug: any = { listening: false, events: [] };
 let rfDebugWanted = false;
-let wsReconnectDelayMs = WS_RECONNECT_BASE_DELAY_MS;
-let wsReconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let rfLockoutDeadlineAt = 0;
 let rfLockoutTicker: ReturnType<typeof setInterval> | null = null;
 const activeHoldStops = new Set<() => void>();
-let statusConnected = false;
-let statusText = 'Connecting...';
-let wsPingMs: number | null = null;
-let wsPingInterval: ReturnType<typeof setInterval> | null = null;
-let wsPingNonce = 0;
-let pendingPing: { nonce: number; startedAt: number } | null = null;
 let appReloadPending = false;
 let presetDragActive = false;
 let presetRenderDeferred = false;
+let wsManager: WsManager | null = null;
+let wsIndicator: Indicator | null = null;
 
 // === WebSocket ===
 
-function renderConnectionStatus() {
-  const dot = document.getElementById('dot');
-  const connText = document.getElementById('conn-text');
-  if (!dot || !connText) return;
-  dot.className = statusConnected ? 'dot on' : 'dot off';
-  if (statusConnected) {
-    connText.textContent = wsPingMs === null ? '\uD83C\uDFD3 ...' : `\uD83C\uDFD3 ${wsPingMs}ms`;
-  } else {
-    connText.textContent = statusText;
+function handleServerMessage(msg: any) {
+  switch (msg.type) {
+    case 'state':
+      reloadIfAppVersionChanged(msg.app_version);
+      state = { ...msg, device_settings: state.device_settings };
+      setRfLockoutRemainingMs(msg.rf_lockout_remaining_ms || 0);
+      render();
+      break;
+    case 'pong':
+      // Already consumed inside Connection; piggy-backed metadata is handled here.
+      if (msg.server_uptime_s != null) state.server_uptime_s = msg.server_uptime_s;
+      if (msg.free_heap_bytes != null) state.free_heap_bytes = msg.free_heap_bytes;
+      if (msg.connected_clients != null) state.connected_clients = msg.connected_clients;
+      if (msg.clients) state.clients = msg.clients;
+      renderUptime();
+      renderClients();
+      renderHeap();
+      break;
+    case 'remote_control_status':
+      remoteStatus = msg.status;
+      renderRemoteControlStatus();
+      break;
+    case 'mqtt_status':
+      mqttStatus = msg.status;
+      renderMqttStatus();
+      break;
+    case 'event_log_state':
+      eventLog = { enabled: !!msg.enabled, events: msg.events || [] };
+      renderEventLog();
+      break;
+    case 'event_log_event':
+      eventLog.events.push(msg.event);
+      if (eventLog.events.length > 100) {
+        eventLog.events.splice(0, eventLog.events.length - 100);
+      }
+      renderEventLog();
+      break;
+    case 'rf_debug_state':
+      rfDebug = { listening: msg.listening, events: msg.events };
+      renderDebug();
+      break;
+    case 'rf_debug_event':
+      rfDebug.events.push(msg.event);
+      if (rfDebug.events.length > 100) {
+        rfDebug.events.splice(0, rfDebug.events.length - 100);
+      }
+      renderDebug();
+      break;
+    case 'export_data':
+      downloadJson(msg.data);
+      break;
+    case 'device_settings':
+      state.device_settings = msg.settings;
+      handleDeviceSettings(msg);
+      renderDebug();
+      break;
+    case 'preset_preview':
+      handlePreviewResult(msg.nonce, msg.preview ?? null, msg.error ?? null);
+      break;
+    case 'network_status':
+      renderNetworkStatus(msg);
+      break;
+    case 'error':
+      alert(msg.message);
+      break;
+  }
+}
+
+function onActiveOpen() {
+  loadDeviceSettings();
+  if (rfDebugWanted) {
+    wsManager?.send({ type: 'start_rf_debug' });
+  }
+}
+
+function onActiveLost() {
+  stopAllHeldButtons();
+  rfDebug.listening = false;
+  renderDebug();
+}
+
+function send(obj: any) {
+  if (!wsManager || !wsManager.send(obj)) {
+    const message = 'WebSocket is not connected';
+    alert(message);
+    throw new Error(message);
   }
 }
 
@@ -142,191 +210,10 @@ function renderAppVersion() {
   if (el) el.textContent = state.app_version || FRONTEND_APP_VERSION;
 }
 
-function setConnectionStatus(connected: boolean, text: string) {
-  statusConnected = connected;
-  statusText = text;
-  renderConnectionStatus();
-}
-
-function resetPingState() {
-  wsPingMs = null;
-  pendingPing = null;
-}
-
-function clearPingTimer() {
-  if (wsPingInterval !== null) {
-    clearInterval(wsPingInterval);
-    wsPingInterval = null;
-  }
-}
-
-function sendPing() {
-  if (!ws || ws.readyState !== WebSocket.OPEN) return;
-  const now = performance.now();
-  if (pendingPing !== null) {
-    if (now - pendingPing.startedAt >= WS_PING_TIMEOUT_MS) {
-      // Pong never arrived - connection is dead. Force close to trigger reconnect.
-      console.warn('Ping timeout - forcing reconnect');
-      ws.close();
-    }
-    return;
-  }
-  const nonce = ++wsPingNonce;
-  pendingPing = { nonce, startedAt: now };
-  ws.send(JSON.stringify({ type: 'ping', nonce }));
-}
-
-function startPingTimer() {
-  clearPingTimer();
-  sendPing();
-  wsPingInterval = setInterval(sendPing, WS_PING_INTERVAL_MS);
-}
-
-function handlePong(msg: any) {
-  if (pendingPing === null || pendingPing.nonce !== msg.nonce) return;
-  wsPingMs = Math.max(1, Math.round(performance.now() - pendingPing.startedAt));
-  pendingPing = null;
-  if (msg.server_uptime_s != null) state.server_uptime_s = msg.server_uptime_s;
-  if (msg.free_heap_bytes != null) state.free_heap_bytes = msg.free_heap_bytes;
-  if (msg.connected_clients != null) state.connected_clients = msg.connected_clients;
-  if (msg.clients) state.clients = msg.clients;
-  renderConnectionStatus();
-  renderUptime();
-  renderClients();
-  renderHeap();
-}
-
-function clearReconnectTimer() {
-  if (wsReconnectTimer !== null) {
-    clearTimeout(wsReconnectTimer);
-    wsReconnectTimer = null;
-  }
-}
-
 function reloadIfAppVersionChanged(serverAppVersion: string) {
   if (appReloadPending || !serverAppVersion || serverAppVersion === FRONTEND_APP_VERSION) return;
   appReloadPending = true;
-  setConnectionStatus(false, 'Firmware updated - reloading...');
   window.location.reload();
-}
-
-function scheduleReconnect() {
-  if (wsReconnectTimer !== null) return;
-  const delayMs = wsReconnectDelayMs;
-  setConnectionStatus(false, 'Disconnected - reconnecting in ' + (delayMs / 1000).toFixed(1) + 's...');
-  wsReconnectTimer = setTimeout(() => {
-    wsReconnectTimer = null;
-    wsReconnectDelayMs = Math.min(wsReconnectDelayMs * 2, WS_RECONNECT_MAX_DELAY_MS);
-    connect();
-  }, delayMs);
-}
-
-function connect() {
-  if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
-  setConnectionStatus(false, 'Connecting...');
-  const wsProtocol = location.protocol === 'https:' ? 'wss://' : 'ws://';
-  const socket = new WebSocket(wsProtocol + location.host + '/ws');
-  ws = socket;
-  socket.onopen = () => {
-    if (ws !== socket) {
-      socket.close();
-      return;
-    }
-    clearReconnectTimer();
-    wsReconnectDelayMs = WS_RECONNECT_BASE_DELAY_MS;
-    resetPingState();
-    setConnectionStatus(true, 'Ping ...');
-    startPingTimer();
-    loadDeviceSettings();
-    if (rfDebugWanted) {
-      send({ type: 'start_rf_debug' });
-    }
-  };
-  socket.onclose = () => {
-    if (ws !== socket) return;
-    ws = null;
-    clearPingTimer();
-    resetPingState();
-    stopAllHeldButtons();
-    rfDebug.listening = false;
-    renderDebug();
-    scheduleReconnect();
-  };
-  socket.onerror = () => {
-    if (ws !== socket) return;
-    console.warn('WebSocket error');
-  };
-  socket.onmessage = (e) => {
-    if (ws !== socket) return;
-    const msg = JSON.parse(e.data);
-    switch (msg.type) {
-      case 'state':
-        reloadIfAppVersionChanged(msg.app_version);
-        state = { ...msg, device_settings: state.device_settings };
-        setRfLockoutRemainingMs(msg.rf_lockout_remaining_ms || 0);
-        render();
-        break;
-      case 'pong':
-        handlePong(msg);
-        break;
-      case 'remote_control_status':
-        remoteStatus = msg.status;
-        renderRemoteControlStatus();
-        break;
-      case 'mqtt_status':
-        mqttStatus = msg.status;
-        renderMqttStatus();
-        break;
-      case 'event_log_state':
-        eventLog = { enabled: !!msg.enabled, events: msg.events || [] };
-        renderEventLog();
-        break;
-      case 'event_log_event':
-        eventLog.events.push(msg.event);
-        if (eventLog.events.length > 100) {
-          eventLog.events.splice(0, eventLog.events.length - 100);
-        }
-        renderEventLog();
-        break;
-      case 'rf_debug_state':
-        rfDebug = { listening: msg.listening, events: msg.events };
-        renderDebug();
-        break;
-      case 'rf_debug_event':
-        rfDebug.events.push(msg.event);
-        if (rfDebug.events.length > 100) {
-          rfDebug.events.splice(0, rfDebug.events.length - 100);
-        }
-        renderDebug();
-        break;
-      case 'export_data':
-        downloadJson(msg.data);
-        break;
-      case 'device_settings':
-        state.device_settings = msg.settings;
-        handleDeviceSettings(msg);
-        renderDebug();
-        break;
-      case 'preset_preview':
-        handlePreviewResult(msg.nonce, msg.preview ?? null, msg.error ?? null);
-        break;
-      case 'network_status':
-        renderNetworkStatus(msg);
-        break;
-      case 'error':
-        alert(msg.message);
-        break;
-    }
-  };
-}
-
-function send(obj: any) {
-  if (!ws || ws.readyState !== WebSocket.OPEN) {
-    const message = 'WebSocket is not connected';
-    alert(message);
-    throw new Error(message);
-  }
-  ws.send(JSON.stringify(obj));
 }
 
 // === Tabs ===
@@ -795,8 +682,7 @@ function openPresetEditor(name: string | null) {
       send({ type: 'save_preset', original_name: origName, preset: edited });
     },
     onPreview: (nonce, previewPreset) => {
-      if (!ws || ws.readyState !== WebSocket.OPEN) return;
-      ws.send(JSON.stringify({ type: 'preview_preset', nonce, preset: previewPreset }));
+      wsManager?.send({ type: 'preview_preset', nonce, preset: previewPreset });
     },
   };
 
@@ -857,7 +743,6 @@ async function startOta(event: Event) {
       bar.style.width = '100%';
       bar.style.background = 'var(--ok)';
       statusEl.textContent = 'Update complete! Device is rebooting...';
-      setConnectionStatus(false, 'Rebooting after OTA...');
     } else {
       throw new Error(result.responseText || `HTTP ${result.status}`);
     }
@@ -1025,7 +910,6 @@ function updateMqttSettingsUi() {
 function rebootDevice() {
   if (!confirm('Reboot the device? Active connections will be dropped.')) return;
   send({ type: 'reboot' });
-  setConnectionStatus(false, 'Rebooting...');
 }
 
 function saveDeviceSettings() {
@@ -1458,7 +1342,7 @@ function setupHoldButton(btn: HTMLButtonElement) {
   function stop() {
     if (!activeHoldStops.has(stop)) return;
     activeHoldStops.delete(stop);
-    if (ws && ws.readyState === WebSocket.OPEN) {
+    if (wsManager && wsManager.isActiveOpen()) {
       send({ type: 'stop_action', collar_name: btn.dataset.collar, mode: btn.dataset.mode });
     }
   }
@@ -1537,19 +1421,43 @@ renderAppVersion();
 renderRemoteControlStatus();
 renderMqttStatus();
 renderEventLog();
-connect();
+
+(function bootWs() {
+  const proto = location.protocol === 'https:' ? 'wss://' : 'ws://';
+  wsManager = new WsManager({
+    url: proto + location.host + '/ws',
+    onMessage: handleServerMessage,
+    onActiveOpen,
+    onActiveLost,
+  });
+  const dot = document.getElementById('dot');
+  const text = document.getElementById('conn-text');
+  if (dot && text) {
+    wsIndicator = new Indicator(wsManager, {
+      dot,
+      text,
+      tooltip: document.getElementById('ws-tooltip'),
+      retryButton: document.getElementById('ws-retry') as HTMLButtonElement | null,
+      titleBase: document.title,
+    });
+  }
+})();
 
 // Tooltip: click/tap to show, click/tap elsewhere to hide.
 // Clicks inside the tooltip body don't toggle, so users can select text.
-document.addEventListener('click', (e) => {
-  const wrapper = document.getElementById('clients-wrapper');
-  if (!wrapper) return;
-  const target = e.target as Node;
-  const tooltip = document.getElementById('clients-tooltip');
-  if (tooltip && tooltip.contains(target)) return;
-  if (wrapper.contains(target)) {
-    wrapper.classList.toggle('show-tooltip');
-  } else {
-    wrapper.classList.remove('show-tooltip');
-  }
-});
+function installTooltipToggle(wrapperId: string, tooltipId: string) {
+  document.addEventListener('click', (e) => {
+    const wrapper = document.getElementById(wrapperId);
+    if (!wrapper) return;
+    const target = e.target as Node;
+    const tooltip = document.getElementById(tooltipId);
+    if (tooltip && tooltip.contains(target)) return;
+    if (wrapper.contains(target)) {
+      wrapper.classList.toggle('show-tooltip');
+    } else {
+      wrapper.classList.remove('show-tooltip');
+    }
+  });
+}
+installTooltipToggle('clients-wrapper', 'clients-tooltip');
+installTooltipToggle('ws-wrapper', 'ws-tooltip');

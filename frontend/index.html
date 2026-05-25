@@ -16,7 +16,12 @@
   <div class="header-right">
     <div class="version mono" id="app-version"></div>
     <div class="indicators" id="indicators">
-      <span><span class="dot off" id="dot"></span> <span id="conn-text">Connecting...</span></span>
+      <span class="ws-wrapper" id="ws-wrapper">
+        <span class="dot off" id="dot" data-state="connecting" tabindex="0" aria-label="Connection status"></span>
+        <span id="conn-text">Connecting...</span>
+        <button id="ws-retry" class="ws-retry" type="button" style="display:none">Try again</button>
+        <div class="ws-tooltip" id="ws-tooltip"></div>
+      </span>
       <span id="remote-conn-text">&#x2197; off</span>
       <span id="mqtt-conn-text"></span>
       <span id="uptime-text"></span>

@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use futures_lite::future as flf;
 use log::{info, warn};
 use picoserve::futures::Either;
 use picoserve::response::ws::{self, Message};
@@ -11,6 +12,14 @@ use super::{
 };
 
 const WS_BUF_SIZE: usize = 2048;
+
+// Server-side heartbeat: clients send `{"type":"ping"}` every 1s. If we go
+// this long without seeing any frame on this socket, the peer is gone (NAT
+// drop, page freeze, Firefox stale-WS bug — see R11 of resilient-ws-ui). The
+// underlying TCP keepalive on embedded networking is unreliable, so we enforce
+// liveness at this layer. Tuned generously to tolerate transient stalls
+// without false positives — the client itself escalates STALE → DEAD faster.
+const WS_IDLE_TIMEOUT_SECS: u64 = 6;
 
 pub(super) struct WsHandler {
     pub forwarded_for: Option<String>,
@@ -46,8 +55,36 @@ impl ws::WebSocketCallbackWithState<ConnectionState> for WsHandler {
         let mut listening_rf_debug = false;
         let mut buf = vec![0u8; WS_BUF_SIZE];
 
+        // ReadResult mirrors `rx.next_message` but adds a third branch for the
+        // idle-timeout race. We can't extend picoserve's Either, so we map into
+        // a local enum and dispatch from one match.
+        enum ReadResult<T> {
+            Frame(T),
+            IdleTimeout,
+        }
+
         loop {
-            match rx.next_message(&mut buf, broadcast_rx.recv()).await {
+            let next = rx.next_message(&mut buf, broadcast_rx.recv());
+            let idle = async_io::Timer::after(Duration::from_secs(WS_IDLE_TIMEOUT_SECS));
+            let result = flf::or(
+                async { ReadResult::Frame(next.await) },
+                async {
+                    idle.await;
+                    ReadResult::IdleTimeout
+                },
+            )
+            .await;
+            let next_msg = match result {
+                ReadResult::Frame(r) => r,
+                ReadResult::IdleTimeout => {
+                    warn!(
+                        "[#{ws_id}] WS idle for >{}s — terminating dead client",
+                        WS_IDLE_TIMEOUT_SECS
+                    );
+                    break;
+                }
+            };
+            match next_msg {
                 Ok(Either::First(Ok(Message::Text(text)))) => {
                     if let Err(err) = handle_text_message(
                         ctx,
